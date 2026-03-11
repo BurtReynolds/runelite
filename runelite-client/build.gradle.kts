@@ -81,6 +81,11 @@ dependencies {
     api(libs.lwjgl.opengl)
     api(libs.lwjgl.opencl)
 
+    // Javalin for API server
+    implementation("io.javalin:javalin:5.6.3")
+    implementation("org.slf4j:slf4j-simple:2.0.9")
+    implementation("com.fasterxml.jackson.core:jackson-databind:2.16.0")
+
     for (platform in listOf(
         "linux",
         "linux-arm64",
