@@ -18,10 +18,15 @@ import net.runelite.client.plugins.gamestate.PlayerState;
 import net.runelite.client.plugins.gamestate.InventoryState;
 import net.runelite.client.plugins.gamestate.WorldState;
 import net.runelite.client.plugins.gamestate.NPCInfo;
+import net.runelite.client.plugins.gamestate.SkillState;
+import net.runelite.client.plugins.gamestate.EquipmentItem;
+import net.runelite.client.plugins.eventmonitor.ChatEntry;
 import net.runelite.client.plugins.objectdetection.ObjectDetectionPlugin;
 import net.runelite.client.plugins.objectdetection.GameObjectInfo;
 import net.runelite.client.plugins.interaction.InteractionPlugin;
 import net.runelite.client.plugins.interaction.MouseMovementProfile;
+import net.runelite.client.plugins.interaction.PlayerTab;
+import net.runelite.client.plugins.interaction.TaskSequencer;
 import net.runelite.api.coords.WorldPoint;
 
 import javax.inject.Inject;
@@ -56,6 +61,9 @@ public class ApiServerPlugin extends Plugin {
     // WebSocket session management
     private final Map<WsContext, Set<String>> wsSessionFilters = new ConcurrentHashMap<>();
     private GameEventListener eventBroadcaster;
+
+    // Active task sequence (only one at a time)
+    private volatile TaskSequencer activeSequence;
 
     @Override
     protected void startUp() throws Exception {
@@ -150,6 +158,9 @@ public class ApiServerPlugin extends Plugin {
         app.get("/api/v1/player/inventory", this::handleGetInventory);
         app.get("/api/v1/player/stats", this::handleGetStats);
         app.get("/api/v1/player/position", this::handleGetPosition);
+        app.get("/api/v1/player/skills", this::handleGetSkills);
+        app.get("/api/v1/player/skills/{name}", this::handleGetSkillByName);
+        app.get("/api/v1/player/equipment", this::handleGetEquipment);
 
         // World state endpoints
         app.get("/api/v1/world", this::handleGetWorld);
@@ -175,6 +186,40 @@ public class ApiServerPlugin extends Plugin {
         app.post("/api/v1/interaction/tab/open", this::handleOpenTab);
         app.post("/api/v1/interaction/prayer/toggle", this::handleTogglePrayer);
         app.post("/api/v1/interaction/object/interact", this::handleObjectInteract);
+        app.post("/api/v1/interaction/npc/interact", this::handleNPCInteract);
+
+        // Equipment interaction endpoints
+        app.post("/api/v1/interaction/equipment/click", this::handleEquipmentClick);
+        app.post("/api/v1/interaction/equipment/item/click", this::handleEquipmentItemClick);
+        app.post("/api/v1/interaction/equipment/select", this::handleEquipmentSelect);
+        app.post("/api/v1/interaction/equipment/item/select", this::handleEquipmentItemSelect);
+
+        // Dialog option endpoints
+        app.post("/api/v1/interaction/dialog/select", this::handleDialogSelect);
+        app.get("/api/v1/interaction/dialog/options", this::handleGetDialogOptions);
+        app.get("/api/v1/interaction/dialog/debug", this::handleDebugDialogWidgets);
+
+        // Sub-menu interaction endpoints
+        app.post("/api/v1/interaction/equipment/item/submenu-select", this::handleEquipmentItemSubMenuSelect);
+        app.post("/api/v1/interaction/inventory/item/submenu-select", this::handleInventoryItemSubMenuSelect);
+
+        // Menu interaction endpoints
+        app.post("/api/v1/interaction/menu/select", this::handleMenuSelect);
+        app.post("/api/v1/interaction/menu/right-click-select", this::handleRightClickAndSelect);
+        app.get("/api/v1/interaction/menu/options", this::handleGetMenuOptions);
+
+        // Web walking endpoints
+        app.post("/api/v1/interaction/walk", this::handleWebWalk);
+        app.post("/api/v1/interaction/walk/cancel", this::handleWebWalkCancel);
+        app.get("/api/v1/interaction/walk/debug", this::handleWebWalkDebug);
+
+        // Task sequencer endpoints
+        app.post("/api/v1/interaction/task/execute", this::handleTaskExecute);
+        app.get("/api/v1/interaction/task/status", this::handleTaskStatus);
+        app.post("/api/v1/interaction/task/cancel", this::handleTaskCancel);
+
+        // Chat endpoints
+        app.get("/api/v1/chat/recent", this::handleGetRecentChat);
 
         // Root endpoint
         app.get("/", this::handleRoot);
@@ -195,7 +240,7 @@ public class ApiServerPlugin extends Plugin {
     private void handleRoot(Context ctx) {
         Map<String, Object> info = new HashMap<>();
         info.put("name", "RuneLite API Server");
-        info.put("version", "1.2.0");
+        info.put("version", "1.3.0");
 
         Map<String, String> endpoints = new HashMap<>();
 
@@ -207,6 +252,9 @@ public class ApiServerPlugin extends Plugin {
         endpoints.put("position", "GET /api/v1/player/position");
         endpoints.put("world", "GET /api/v1/world");
         endpoints.put("npcs", "GET /api/v1/world/npcs");
+        endpoints.put("skills", "GET /api/v1/player/skills");
+        endpoints.put("skillByName", "GET /api/v1/player/skills/{name}");
+        endpoints.put("equipment", "GET /api/v1/player/equipment");
 
         // Object detection endpoints
         endpoints.put("allObjects", "GET /api/v1/objects/all");
@@ -228,6 +276,39 @@ public class ApiServerPlugin extends Plugin {
         endpoints.put("openTab", "POST /api/v1/interaction/tab/open {tab, profile?}");
         endpoints.put("togglePrayer", "POST /api/v1/interaction/prayer/toggle {groupId, childId, profile?}");
         endpoints.put("objectInteract", "POST /api/v1/interaction/object/interact {objectName, action?, profile?}");
+        endpoints.put("npcInteract", "POST /api/v1/interaction/npc/interact {npcName, action?, profile?}");
+
+        // Equipment interaction endpoints
+        endpoints.put("equipmentClick", "POST /api/v1/interaction/equipment/click {slot, profile?}");
+        endpoints.put("equipmentItemClick", "POST /api/v1/interaction/equipment/item/click {itemName, profile?}");
+        endpoints.put("equipmentSelect", "POST /api/v1/interaction/equipment/select {slot, option, profile?}");
+        endpoints.put("equipmentItemSelect", "POST /api/v1/interaction/equipment/item/select {itemName, option, profile?}");
+
+        // Sub-menu interaction endpoints
+        endpoints.put("equipmentItemSubMenuSelect", "POST /api/v1/interaction/equipment/item/submenu-select {itemName, parentOption, subOption, profile?}");
+        endpoints.put("inventoryItemSubMenuSelect", "POST /api/v1/interaction/inventory/item/submenu-select {itemName, parentOption, subOption, profile?}");
+
+        // Dialog option endpoints
+        endpoints.put("dialogSelect", "POST /api/v1/interaction/dialog/select {option, timeoutMs?, profile?}");
+        endpoints.put("dialogOptions", "GET /api/v1/interaction/dialog/options");
+
+        // Menu endpoints
+        endpoints.put("menuSelect", "POST /api/v1/interaction/menu/select {option, target?, profile?}");
+        endpoints.put("menuRightClickSelect", "POST /api/v1/interaction/menu/right-click-select {x, y, option, target?, profile?}");
+        endpoints.put("menuOptions", "GET /api/v1/interaction/menu/options");
+
+        // Web walking endpoints
+        endpoints.put("webWalk", "POST /api/v1/interaction/walk {x, y, plane?, profile?}");
+        endpoints.put("webWalkCancel", "POST /api/v1/interaction/walk/cancel");
+        endpoints.put("webWalkDebug", "GET /api/v1/interaction/walk/debug?x=&y=&plane=");
+
+        // Task sequencer endpoints
+        endpoints.put("taskExecute", "POST /api/v1/interaction/task/execute {steps: [...], profile?, stopOnFailure?}");
+        endpoints.put("taskStatus", "GET /api/v1/interaction/task/status");
+        endpoints.put("taskCancel", "POST /api/v1/interaction/task/cancel");
+
+        // Chat endpoints
+        endpoints.put("chatRecent", "GET /api/v1/chat/recent?limit=50&type=GAMEMESSAGE");
 
         info.put("endpoints", endpoints);
         info.put("websocket", "ws://localhost:7070/ws/events");
@@ -619,35 +700,21 @@ public class ApiServerPlugin extends Plugin {
             @SuppressWarnings("unchecked")
             Map<String, Object> body = ctx.bodyAsClass(Map.class);
 
-            String tab = (String) body.get("tab");
+            String tabName = (String) body.get("tab");
             String profileName = (String) body.getOrDefault("profile", "NORMAL");
 
-            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
-            boolean success = false;
-
-            switch (tab.toUpperCase()) {
-                case "EQUIPMENT":
-                    success = interactionPlugin.openEquipment(profile);
-                    break;
-                case "STATS":
-                    success = interactionPlugin.openStats(profile);
-                    break;
-                case "QUESTS":
-                    success = interactionPlugin.openQuests(profile);
-                    break;
-                case "PRAYER":
-                case "PRAYERS":
-                    success = interactionPlugin.openPrayers(profile);
-                    break;
-                case "MAGIC":
-                    success = interactionPlugin.openMagic(profile);
-                    break;
-                default:
-                    ctx.status(400).json(createError("Unknown tab: " + tab));
-                    return;
+            PlayerTab tab = PlayerTab.fromString(tabName);
+            if (tab == null) {
+                ctx.status(400).json(createError("Unknown tab: " + tabName
+                    + ". Valid tabs: COMBAT, STATS, QUESTS, INVENTORY, EQUIPMENT (or WORN_EQUIPMENT), "
+                    + "PRAYER, MAGIC, FRIENDS_CHAT, ACCOUNT, FRIENDS, LOGOUT, OPTIONS, EMOTES, MUSIC"));
+                return;
             }
 
-            ctx.json(Map.of("success", success, "tab", tab));
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+            boolean success = interactionPlugin.openPlayerTab(tab, profile);
+
+            ctx.json(Map.of("success", success, "tab", tab.name()));
         } catch (Exception e) {
             log.error("Error opening tab", e);
             ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
@@ -707,6 +774,830 @@ public class ApiServerPlugin extends Plugin {
             log.error("Error interacting with object", e);
             ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
         }
+    }
+
+    // ===== Menu Interaction Handlers =====
+
+    private void handleMenuSelect(Context ctx) {
+        if (interactionPlugin == null) {
+            ctx.status(503).json(createError("Interaction plugin not loaded"));
+            return;
+        }
+
+        try {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> body = ctx.bodyAsClass(Map.class);
+
+            String option = (String) body.get("option");
+            String target = (String) body.get("target");
+            String profileName = (String) body.getOrDefault("profile", "NORMAL");
+
+            if (option == null || option.trim().isEmpty()) {
+                ctx.status(400).json(createError("'option' is required"));
+                return;
+            }
+
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+            boolean success = interactionPlugin.selectMenuOption(option, target, profile);
+
+            ctx.json(Map.of("success", success, "option", option,
+                "target", target != null ? target : ""));
+        } catch (Exception e) {
+            log.error("Error selecting menu option", e);
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    private void handleRightClickAndSelect(Context ctx) {
+        if (interactionPlugin == null) {
+            ctx.status(503).json(createError("Interaction plugin not loaded"));
+            return;
+        }
+
+        try {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> body = ctx.bodyAsClass(Map.class);
+
+            int x = ((Number) body.get("x")).intValue();
+            int y = ((Number) body.get("y")).intValue();
+            String option = (String) body.get("option");
+            String target = (String) body.get("target");
+            String profileName = (String) body.getOrDefault("profile", "NORMAL");
+
+            if (option == null || option.trim().isEmpty()) {
+                ctx.status(400).json(createError("'option' is required"));
+                return;
+            }
+
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+            boolean success = interactionPlugin.rightClickAndSelect(x, y, option, target, profile);
+
+            ctx.json(Map.of("success", success, "x", x, "y", y, "option", option));
+        } catch (Exception e) {
+            log.error("Error with right-click and select", e);
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    // ===== Equipment Interaction Handlers =====
+
+    private void handleEquipmentClick(Context ctx) {
+        if (interactionPlugin == null) {
+            ctx.status(503).json(createError("Interaction plugin not loaded"));
+            return;
+        }
+
+        try {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> body = ctx.bodyAsClass(Map.class);
+
+            String slot = (String) body.get("slot");
+            String profileName = (String) body.getOrDefault("profile", "NORMAL");
+
+            if (slot == null || slot.trim().isEmpty()) {
+                ctx.status(400).json(createError("'slot' is required (e.g., HEAD, WEAPON, RING)"));
+                return;
+            }
+
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+            boolean success = interactionPlugin.clickEquipmentSlot(slot, profile);
+
+            ctx.json(Map.of("success", success, "slot", slot));
+        } catch (Exception e) {
+            log.error("Error clicking equipment slot", e);
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    private void handleEquipmentItemClick(Context ctx) {
+        if (interactionPlugin == null) {
+            ctx.status(503).json(createError("Interaction plugin not loaded"));
+            return;
+        }
+
+        try {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> body = ctx.bodyAsClass(Map.class);
+
+            String itemName = (String) body.get("itemName");
+            String profileName = (String) body.getOrDefault("profile", "NORMAL");
+
+            if (itemName == null || itemName.trim().isEmpty()) {
+                ctx.status(400).json(createError("'itemName' is required"));
+                return;
+            }
+
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+            boolean success = interactionPlugin.clickEquipmentItem(itemName, profile);
+
+            ctx.json(Map.of("success", success, "itemName", itemName));
+        } catch (Exception e) {
+            log.error("Error clicking equipment item", e);
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    private void handleEquipmentSelect(Context ctx) {
+        if (interactionPlugin == null) {
+            ctx.status(503).json(createError("Interaction plugin not loaded"));
+            return;
+        }
+
+        try {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> body = ctx.bodyAsClass(Map.class);
+
+            String slot = (String) body.get("slot");
+            String option = (String) body.get("option");
+            String profileName = (String) body.getOrDefault("profile", "NORMAL");
+
+            if (slot == null || slot.trim().isEmpty()) {
+                ctx.status(400).json(createError("'slot' is required"));
+                return;
+            }
+            if (option == null || option.trim().isEmpty()) {
+                ctx.status(400).json(createError("'option' is required"));
+                return;
+            }
+
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+            boolean success = interactionPlugin.rightClickEquipmentSlotAndSelect(slot, option, profile);
+
+            ctx.json(Map.of("success", success, "slot", slot, "option", option));
+        } catch (Exception e) {
+            log.error("Error selecting equipment option", e);
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    private void handleEquipmentItemSelect(Context ctx) {
+        if (interactionPlugin == null) {
+            ctx.status(503).json(createError("Interaction plugin not loaded"));
+            return;
+        }
+
+        try {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> body = ctx.bodyAsClass(Map.class);
+
+            String itemName = (String) body.get("itemName");
+            String option = (String) body.get("option");
+            String profileName = (String) body.getOrDefault("profile", "NORMAL");
+
+            if (itemName == null || itemName.trim().isEmpty()) {
+                ctx.status(400).json(createError("'itemName' is required"));
+                return;
+            }
+            if (option == null || option.trim().isEmpty()) {
+                ctx.status(400).json(createError("'option' is required"));
+                return;
+            }
+
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+            boolean success = interactionPlugin.rightClickEquipmentItemAndSelect(itemName, option, profile);
+
+            ctx.json(Map.of("success", success, "itemName", itemName, "option", option));
+        } catch (Exception e) {
+            log.error("Error selecting equipment item option", e);
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    // ===== Sub-Menu Handlers =====
+
+    private void handleEquipmentItemSubMenuSelect(Context ctx) {
+        if (interactionPlugin == null) {
+            ctx.status(503).json(createError("Interaction plugin not loaded"));
+            return;
+        }
+
+        try {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> body = ctx.bodyAsClass(Map.class);
+
+            String itemName = (String) body.get("itemName");
+            String parentOption = (String) body.get("parentOption");
+            String subOption = (String) body.get("subOption");
+            String profileName = (String) body.getOrDefault("profile", "NORMAL");
+
+            if (itemName == null || itemName.trim().isEmpty()) {
+                ctx.status(400).json(createError("'itemName' is required"));
+                return;
+            }
+            if (parentOption == null || parentOption.trim().isEmpty()) {
+                ctx.status(400).json(createError("'parentOption' is required"));
+                return;
+            }
+            if (subOption == null || subOption.trim().isEmpty()) {
+                ctx.status(400).json(createError("'subOption' is required"));
+                return;
+            }
+
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+            boolean success = interactionPlugin.rightClickEquipmentItemHoverAndSelect(
+                itemName, parentOption, subOption, profile);
+
+            ctx.json(Map.of("success", success, "itemName", itemName,
+                "parentOption", parentOption, "subOption", subOption));
+        } catch (Exception e) {
+            log.error("Error selecting equipment item sub-menu option", e);
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    private void handleInventoryItemSubMenuSelect(Context ctx) {
+        if (interactionPlugin == null) {
+            ctx.status(503).json(createError("Interaction plugin not loaded"));
+            return;
+        }
+
+        try {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> body = ctx.bodyAsClass(Map.class);
+
+            String itemName = (String) body.get("itemName");
+            String parentOption = (String) body.get("parentOption");
+            String subOption = (String) body.get("subOption");
+            String profileName = (String) body.getOrDefault("profile", "NORMAL");
+
+            if (itemName == null || itemName.trim().isEmpty()) {
+                ctx.status(400).json(createError("'itemName' is required"));
+                return;
+            }
+            if (parentOption == null || parentOption.trim().isEmpty()) {
+                ctx.status(400).json(createError("'parentOption' is required"));
+                return;
+            }
+            if (subOption == null || subOption.trim().isEmpty()) {
+                ctx.status(400).json(createError("'subOption' is required"));
+                return;
+            }
+
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+            boolean success = interactionPlugin.rightClickInventoryItemHoverAndSelect(
+                itemName, parentOption, subOption, profile);
+
+            ctx.json(Map.of("success", success, "itemName", itemName,
+                "parentOption", parentOption, "subOption", subOption));
+        } catch (Exception e) {
+            log.error("Error selecting inventory item sub-menu option", e);
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    // ===== Dialog Option Handlers =====
+
+    private void handleDialogSelect(Context ctx) {
+        if (interactionPlugin == null) {
+            ctx.status(503).json(createError("Interaction plugin not loaded"));
+            return;
+        }
+
+        try {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> body = ctx.bodyAsClass(Map.class);
+
+            String option = (String) body.get("option");
+            String profileName = (String) body.getOrDefault("profile", "NORMAL");
+            int timeoutMs = body.containsKey("timeoutMs")
+                ? ((Number) body.get("timeoutMs")).intValue()
+                : 0;
+
+            if (option == null || option.trim().isEmpty()) {
+                ctx.status(400).json(createError("'option' is required"));
+                return;
+            }
+
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+            boolean success;
+
+            if (timeoutMs > 0) {
+                success = interactionPlugin.waitAndSelectDialogOption(option, timeoutMs, profile);
+            } else {
+                success = interactionPlugin.selectDialogOption(option, profile);
+            }
+
+            ctx.json(Map.of("success", success, "option", option));
+        } catch (Exception e) {
+            log.error("Error selecting dialog option", e);
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    private void handleGetDialogOptions(Context ctx) {
+        if (interactionPlugin == null) {
+            ctx.status(503).json(createError("Interaction plugin not loaded"));
+            return;
+        }
+
+        String[] options = interactionPlugin.getDialogOptions();
+        ctx.json(Map.of(
+            "dialogOpen", options.length > 0,
+            "count", options.length,
+            "options", options
+        ));
+    }
+
+    private void handleDebugDialogWidgets(Context ctx) {
+        if (interactionPlugin == null) {
+            ctx.status(503).json(createError("Interaction plugin not loaded"));
+            return;
+        }
+
+        ctx.json(interactionPlugin.debugScanDialogWidgets());
+    }
+
+    private void handleGetMenuOptions(Context ctx) {
+        if (interactionPlugin == null) {
+            ctx.status(503).json(createError("Interaction plugin not loaded"));
+            return;
+        }
+
+        String[] options = interactionPlugin.getMenuOptions();
+        ctx.json(Map.of(
+            "menuOpen", options.length > 0,
+            "count", options.length,
+            "options", options
+        ));
+    }
+
+    // ===== Web Walking Handlers =====
+
+    private volatile java.util.concurrent.CompletableFuture<Boolean> activeWalkFuture = null;
+
+    private void handleWebWalk(Context ctx) {
+        if (interactionPlugin == null) {
+            ctx.status(503).json(createError("Interaction plugin not loaded"));
+            return;
+        }
+
+        try {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> body = ctx.bodyAsClass(Map.class);
+
+            int x = ((Number) body.get("x")).intValue();
+            int y = ((Number) body.get("y")).intValue();
+            int plane = body.containsKey("plane") ? ((Number) body.get("plane")).intValue() : 0;
+            String profileName = (String) body.getOrDefault("profile", "NORMAL");
+
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+            WorldPoint destination = new WorldPoint(x, y, plane);
+
+            activeWalkFuture = java.util.concurrent.CompletableFuture.supplyAsync(() ->
+                interactionPlugin.webWalkTo(destination, profile));
+
+            ctx.json(Map.of(
+                "success", true,
+                "message", "Web walk started",
+                "destination", Map.of("x", x, "y", y, "plane", plane)
+            ));
+        } catch (Exception e) {
+            log.error("Error starting web walk", e);
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    private void handleWebWalkCancel(Context ctx) {
+        if (interactionPlugin == null) {
+            ctx.status(503).json(createError("Interaction plugin not loaded"));
+            return;
+        }
+
+        interactionPlugin.cancelWebWalk();
+        ctx.json(Map.of("success", true, "message", "Web walk cancel requested"));
+    }
+
+    private void handleWebWalkDebug(Context ctx) {
+        if (interactionPlugin == null) {
+            ctx.status(503).json(createError("Interaction plugin not loaded"));
+            return;
+        }
+
+        WorldPoint dest = null;
+        String xParam = ctx.queryParam("x");
+        String yParam = ctx.queryParam("y");
+        if (xParam != null && yParam != null) {
+            int x = Integer.parseInt(xParam);
+            int y = Integer.parseInt(yParam);
+            int plane = ctx.queryParamAsClass("plane", Integer.class).getOrDefault(0);
+            dest = new WorldPoint(x, y, plane);
+        }
+
+        ctx.json(interactionPlugin.getWebWalker().getDebugInfo(dest));
+    }
+
+    // ===== Task Sequencer Handlers =====
+
+    @SuppressWarnings("unchecked")
+    private void handleTaskExecute(Context ctx) {
+        if (interactionPlugin == null) {
+            ctx.status(503).json(createError("Interaction plugin not loaded"));
+            return;
+        }
+
+        if (activeSequence != null && activeSequence.isRunning()) {
+            ctx.status(409).json(createError("A task sequence is already running. Cancel it first or wait for it to finish."));
+            return;
+        }
+
+        try {
+            Map<String, Object> body = ctx.bodyAsClass(Map.class);
+
+            String profileName = (String) body.getOrDefault("profile", "NORMAL");
+            boolean stopOnFail = body.containsKey("stopOnFailure")
+                ? (Boolean) body.get("stopOnFailure")
+                : true;
+
+            List<Map<String, Object>> stepDefs = (List<Map<String, Object>>) body.get("steps");
+            if (stepDefs == null || stepDefs.isEmpty()) {
+                ctx.status(400).json(createError("'steps' array is required and must not be empty"));
+                return;
+            }
+
+            TaskSequencer seq = interactionPlugin.createTaskSequence()
+                .withProfile(profileName)
+                .stopOnFailure(stopOnFail);
+
+            // Parse each step
+            for (Map<String, Object> stepDef : stepDefs) {
+                String action = (String) stepDef.get("action");
+                if (action == null) {
+                    ctx.status(400).json(createError("Each step must have an 'action' field"));
+                    return;
+                }
+
+                if (!buildStep(seq, action, stepDef)) {
+                    ctx.status(400).json(createError("Unknown action: " + action));
+                    return;
+                }
+            }
+
+            activeSequence = seq;
+
+            // Execute async
+            seq.execute().thenAccept(result -> {
+                log.info("Task sequence finished: success={}, completed={}/{}",
+                    result.isSuccess(), result.getCompletedSteps(), result.getTotalSteps());
+            });
+
+            ctx.json(Map.of(
+                "success", true,
+                "message", "Task sequence started",
+                "totalSteps", stepDefs.size()
+            ));
+        } catch (Exception e) {
+            log.error("Error starting task sequence", e);
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    private boolean buildStep(TaskSequencer seq, String action, Map<String, Object> params) {
+        switch (action.toLowerCase()) {
+            case "move_mouse":
+                seq.moveMouse(
+                    ((Number) params.get("x")).intValue(),
+                    ((Number) params.get("y")).intValue()
+                );
+                return true;
+            case "click":
+                if (params.containsKey("x") && params.containsKey("y")) {
+                    seq.clickAt(
+                        ((Number) params.get("x")).intValue(),
+                        ((Number) params.get("y")).intValue()
+                    );
+                } else {
+                    seq.click();
+                }
+                return true;
+            case "right_click":
+                seq.rightClick();
+                return true;
+            case "open_tab":
+                seq.openTab((String) params.get("tab"));
+                return true;
+            case "click_inventory_slot":
+                seq.clickInventorySlot(((Number) params.get("slot")).intValue());
+                return true;
+            case "click_inventory_item":
+                seq.clickInventoryItem((String) params.get("itemName"));
+                return true;
+            case "right_click_inventory_select":
+                seq.rightClickInventoryItemAndSelect(
+                    (String) params.get("itemName"),
+                    (String) params.get("option")
+                );
+                return true;
+            case "select_menu_option":
+                String target = (String) params.get("target");
+                if (target != null) {
+                    seq.selectMenuOption((String) params.get("option"), target);
+                } else {
+                    seq.selectMenuOption((String) params.get("option"));
+                }
+                return true;
+            case "right_click_and_select":
+                seq.rightClickAndSelect(
+                    ((Number) params.get("x")).intValue(),
+                    ((Number) params.get("y")).intValue(),
+                    (String) params.get("option")
+                );
+                return true;
+            case "interact_object":
+                String objAction = (String) params.get("objectAction");
+                if (objAction != null) {
+                    seq.interactWithObject((String) params.get("objectName"), objAction);
+                } else {
+                    seq.interactWithObject((String) params.get("objectName"));
+                }
+                return true;
+            case "interact_npc":
+                String npcAction = (String) params.get("npcAction");
+                if (npcAction != null) {
+                    seq.interactWithNPC((String) params.get("npcName"), npcAction);
+                } else {
+                    seq.interactWithNPC((String) params.get("npcName"));
+                }
+                return true;
+            case "click_equipment_slot":
+                seq.clickEquipmentSlot((String) params.get("slot"));
+                return true;
+            case "right_click_equipment_slot_select":
+                seq.rightClickEquipmentSlotAndSelect(
+                    (String) params.get("slot"),
+                    (String) params.get("option")
+                );
+                return true;
+            case "click_equipment_item":
+                seq.clickEquipmentItem((String) params.get("itemName"));
+                return true;
+            case "right_click_equipment_item_select":
+                seq.rightClickEquipmentItemAndSelect(
+                    (String) params.get("itemName"),
+                    (String) params.get("option")
+                );
+                return true;
+            case "select_dialog_option":
+                seq.selectDialogOption((String) params.get("option"));
+                return true;
+            case "wait_and_select_dialog_option":
+                seq.waitAndSelectDialogOption(
+                    (String) params.get("option"),
+                    getIntParam(params, "timeoutMs", 5000)
+                );
+                return true;
+            case "right_click_equipment_item_hover_select":
+                seq.rightClickEquipmentItemHoverAndSelect(
+                    (String) params.get("itemName"),
+                    (String) params.get("parentOption"),
+                    (String) params.get("subOption")
+                );
+                return true;
+            case "right_click_inventory_item_hover_select":
+                seq.rightClickInventoryItemHoverAndSelect(
+                    (String) params.get("itemName"),
+                    (String) params.get("parentOption"),
+                    (String) params.get("subOption")
+                );
+                return true;
+            case "walk_to":
+                seq.walkTo(
+                    ((Number) params.get("x")).intValue(),
+                    ((Number) params.get("y")).intValue(),
+                    getIntParam(params, "plane", 0)
+                );
+                return true;
+            case "delay":
+                if (params.containsKey("maxMs")) {
+                    seq.delay(
+                        ((Number) params.get("minMs")).intValue(),
+                        ((Number) params.get("maxMs")).intValue()
+                    );
+                } else {
+                    seq.delay(((Number) params.get("ms")).intValue());
+                }
+                return true;
+            // Conditional wait steps
+            case "wait_until_idle":
+                seq.waitUntilIdle(
+                    getIntParam(params, "timeoutMs", 10000),
+                    getIntParam(params, "pollMs", 200)
+                );
+                return true;
+            case "wait_until_not_animating":
+                seq.waitUntilNotAnimating(
+                    getIntParam(params, "timeoutMs", 10000),
+                    getIntParam(params, "pollMs", 200)
+                );
+                return true;
+            case "wait_until_moving":
+                seq.waitUntilMoving(
+                    getIntParam(params, "timeoutMs", 10000),
+                    getIntParam(params, "pollMs", 200)
+                );
+                return true;
+            case "wait_until_stopped":
+                seq.waitUntilStopped(
+                    getIntParam(params, "timeoutMs", 10000),
+                    getIntParam(params, "pollMs", 200)
+                );
+                return true;
+            case "wait_until_inventory_full":
+                seq.waitUntilInventoryFull(
+                    getIntParam(params, "timeoutMs", 10000),
+                    getIntParam(params, "pollMs", 200)
+                );
+                return true;
+            case "wait_until_inventory_not_full":
+                seq.waitUntilInventoryNotFull(
+                    getIntParam(params, "timeoutMs", 10000),
+                    getIntParam(params, "pollMs", 200)
+                );
+                return true;
+            case "wait_until_inventory_contains":
+                seq.waitUntilInventoryContains(
+                    (String) params.get("itemName"),
+                    getIntParam(params, "timeoutMs", 10000),
+                    getIntParam(params, "pollMs", 200)
+                );
+                return true;
+            case "wait_until_inventory_empty":
+                seq.waitUntilInventoryEmpty(
+                    getIntParam(params, "timeoutMs", 10000),
+                    getIntParam(params, "pollMs", 200)
+                );
+                return true;
+            case "wait_until_health_above":
+                seq.waitUntilHealthAbove(
+                    ((Number) params.get("threshold")).intValue(),
+                    getIntParam(params, "timeoutMs", 10000),
+                    getIntParam(params, "pollMs", 200)
+                );
+                return true;
+            case "wait_until_health_below":
+                seq.waitUntilHealthBelow(
+                    ((Number) params.get("threshold")).intValue(),
+                    getIntParam(params, "timeoutMs", 10000),
+                    getIntParam(params, "pollMs", 200)
+                );
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private void handleTaskStatus(Context ctx) {
+        if (activeSequence == null) {
+            ctx.json(Map.of(
+                "running", false,
+                "message", "No task sequence has been started"
+            ));
+            return;
+        }
+
+        Map<String, Object> status = new HashMap<>();
+        status.put("running", activeSequence.isRunning());
+        status.put("currentStep", activeSequence.getCurrentStepIndex());
+        status.put("totalSteps", activeSequence.getStepCount());
+        status.put("error", activeSequence.getLastError());
+
+        ctx.json(status);
+    }
+
+    private void handleTaskCancel(Context ctx) {
+        if (activeSequence == null || !activeSequence.isRunning()) {
+            ctx.json(Map.of("success", false, "message", "No task sequence is currently running"));
+            return;
+        }
+
+        activeSequence.cancel();
+        ctx.json(Map.of("success", true, "message", "Task sequence cancellation requested"));
+    }
+
+    // ===== Skills Handlers =====
+
+    private void handleGetSkills(Context ctx) {
+        if (gameStatePlugin == null) {
+            ctx.status(503).json(createError("GameState plugin not loaded"));
+            return;
+        }
+
+        List<SkillState> skills = gameStatePlugin.getSkills();
+        if (skills == null) {
+            ctx.status(404).json(createError("Skills data not available"));
+            return;
+        }
+
+        ctx.json(Map.of(
+            "count", skills.size(),
+            "skills", skills
+        ));
+    }
+
+    private void handleGetSkillByName(Context ctx) {
+        if (gameStatePlugin == null) {
+            ctx.status(503).json(createError("GameState plugin not loaded"));
+            return;
+        }
+
+        String name = ctx.pathParam("name");
+        SkillState skill = gameStatePlugin.getSkill(name);
+        if (skill == null) {
+            ctx.status(404).json(createError("Skill not found: " + name));
+            return;
+        }
+
+        ctx.json(skill);
+    }
+
+    // ===== Equipment Handlers =====
+
+    private void handleGetEquipment(Context ctx) {
+        if (gameStatePlugin == null) {
+            ctx.status(503).json(createError("GameState plugin not loaded"));
+            return;
+        }
+
+        List<EquipmentItem> equipment = gameStatePlugin.getEquipment();
+        if (equipment == null) {
+            ctx.status(404).json(createError("Equipment data not available"));
+            return;
+        }
+
+        ctx.json(Map.of(
+            "count", equipment.size(),
+            "items", equipment
+        ));
+    }
+
+    // ===== NPC Interaction Handler =====
+
+    private void handleNPCInteract(Context ctx) {
+        if (interactionPlugin == null) {
+            ctx.status(503).json(createError("Interaction plugin not loaded"));
+            return;
+        }
+
+        try {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> body = ctx.bodyAsClass(Map.class);
+
+            String npcName = (String) body.get("npcName");
+            String action = (String) body.get("action");
+            String profileName = (String) body.getOrDefault("profile", "NORMAL");
+
+            if (npcName == null || npcName.trim().isEmpty()) {
+                ctx.status(400).json(createError("'npcName' is required"));
+                return;
+            }
+
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+            boolean success;
+
+            if (action != null && !action.trim().isEmpty()) {
+                success = interactionPlugin.interactWithNPC(npcName, action, profile);
+            } else {
+                success = interactionPlugin.interactWithNPC(npcName, profile);
+            }
+
+            ctx.json(Map.of("success", success, "npcName", npcName,
+                "action", action != null ? action : "default"));
+        } catch (Exception e) {
+            log.error("Error interacting with NPC", e);
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    // ===== Chat Handler =====
+
+    private void handleGetRecentChat(Context ctx) {
+        if (eventMonitorPlugin == null) {
+            ctx.status(503).json(createError("EventMonitor plugin not loaded"));
+            return;
+        }
+
+        int limit = ctx.queryParamAsClass("limit", Integer.class).getOrDefault(50);
+        String type = ctx.queryParam("type");
+
+        if (limit < 1 || limit > 500) {
+            ctx.status(400).json(createError("Limit must be between 1 and 500"));
+            return;
+        }
+
+        List<ChatEntry> messages = eventMonitorPlugin.getRecentChat(limit, type);
+        ctx.json(Map.of(
+            "count", messages.size(),
+            "limit", limit,
+            "type", type != null ? type : "all",
+            "messages", messages
+        ));
+    }
+
+    private int getIntParam(Map<String, Object> params, String key, int defaultValue) {
+        Object value = params.get(key);
+        if (value instanceof Number) {
+            return ((Number) value).intValue();
+        }
+        return defaultValue;
     }
 
     private Map<String, Object> createError(String message) {

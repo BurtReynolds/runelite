@@ -8,7 +8,9 @@ import net.runelite.client.plugins.PluginDescriptor;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.stream.Collectors;
 
 /**
  * Plugin that monitors and broadcasts game events for external access
@@ -25,6 +27,9 @@ public class EventMonitorPlugin extends Plugin {
     private final List<GameEvent> recentEvents = new CopyOnWriteArrayList<>();
     private static final int MAX_RECENT_EVENTS = 1000;
 
+    private final List<ChatEntry> chatHistory = new CopyOnWriteArrayList<>();
+    private static final int MAX_CHAT_HISTORY = 500;
+
     @Override
     protected void startUp() throws Exception {
         log.info("Event Monitor Plugin started");
@@ -35,6 +40,7 @@ public class EventMonitorPlugin extends Plugin {
         log.info("Event Monitor Plugin stopped");
         listeners.clear();
         recentEvents.clear();
+        chatHistory.clear();
     }
 
     // Public API for managing listeners
@@ -107,6 +113,31 @@ public class EventMonitorPlugin extends Plugin {
         data.put("timestamp", event.getTimestamp());
 
         broadcastEvent(new GameEvent("chat_message", System.currentTimeMillis(), data));
+
+        // Store in chat history
+        chatHistory.add(new ChatEntry(
+            event.getType().name(),
+            event.getName(),
+            event.getMessage(),
+            System.currentTimeMillis()
+        ));
+        if (chatHistory.size() > MAX_CHAT_HISTORY) {
+            chatHistory.remove(0);
+        }
+    }
+
+    public List<ChatEntry> getRecentChat(int limit, String typeFilter) {
+        List<ChatEntry> filtered = chatHistory;
+        if (typeFilter != null && !typeFilter.isEmpty()) {
+            String filter = typeFilter.toUpperCase();
+            filtered = chatHistory.stream()
+                .filter(e -> e.getType().equals(filter))
+                .collect(Collectors.toList());
+        }
+        if (filtered.size() > limit) {
+            return filtered.subList(filtered.size() - limit, filtered.size());
+        }
+        return new ArrayList<>(filtered);
     }
 
     @Subscribe

@@ -5,7 +5,9 @@ import net.runelite.api.*;
 import net.runelite.api.coords.WorldPoint;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
@@ -19,6 +21,8 @@ public class GameStateManager {
     private InventoryState cachedInventoryState;
     private WorldState cachedWorldState;
     private List<NPCInfo> cachedNearbyNPCs = new ArrayList<>();
+    private List<SkillState> cachedSkills = new ArrayList<>();
+    private List<EquipmentItem> cachedEquipment = new ArrayList<>();
 
     private long lastUpdate = 0;
 
@@ -37,6 +41,8 @@ public class GameStateManager {
             updateInventoryState();
             updateWorldState();
             updateNearbyNPCs();
+            updateSkills();
+            updateEquipment();
 
             lastUpdate = now;
         } catch (Exception e) {
@@ -168,6 +174,48 @@ public class GameStateManager {
         );
     }
 
+    private void updateSkills() {
+        List<SkillState> skills = new ArrayList<>();
+        for (Skill skill : Skill.values()) {
+            if (skill == null) {
+                continue;
+            }
+            skills.add(new SkillState(
+                skill.getName(),
+                client.getRealSkillLevel(skill),
+                client.getBoostedSkillLevel(skill),
+                client.getSkillExperience(skill)
+            ));
+        }
+        cachedSkills = skills;
+    }
+
+    private void updateEquipment() {
+        ItemContainer equipment = client.getItemContainer(net.runelite.api.gameval.InventoryID.WORN);
+        if (equipment == null) {
+            cachedEquipment = new ArrayList<>();
+            return;
+        }
+
+        Item[] items = equipment.getItems();
+        List<EquipmentItem> equipped = new ArrayList<>();
+
+        for (EquipmentInventorySlot slot : EquipmentInventorySlot.values()) {
+            int idx = slot.getSlotIdx();
+            if (idx < items.length && items[idx].getId() != -1) {
+                ItemComposition itemComp = client.getItemDefinition(items[idx].getId());
+                equipped.add(new EquipmentItem(
+                    slot.name(),
+                    items[idx].getId(),
+                    itemComp.getName(),
+                    items[idx].getQuantity()
+                ));
+            }
+        }
+
+        cachedEquipment = equipped;
+    }
+
     // Public getters
     public PlayerState getPlayerState() {
         return cachedPlayerState;
@@ -183,6 +231,21 @@ public class GameStateManager {
 
     public List<NPCInfo> getNearbyNPCs() {
         return new ArrayList<>(cachedNearbyNPCs);
+    }
+
+    public List<SkillState> getSkills() {
+        return new ArrayList<>(cachedSkills);
+    }
+
+    public SkillState getSkill(String name) {
+        return cachedSkills.stream()
+            .filter(s -> s.getName().equalsIgnoreCase(name))
+            .findFirst()
+            .orElse(null);
+    }
+
+    public List<EquipmentItem> getEquipment() {
+        return new ArrayList<>(cachedEquipment);
     }
 
     public long getLastUpdateTime() {

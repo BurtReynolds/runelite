@@ -65,4 +65,16 @@ public class GameStatePlugin extends Plugin {
     public List<NPCInfo> getNearbyNPCs() {
         return stateManager != null ? stateManager.getNearbyNPCs() : null;
     }
+
+    public List<SkillState> getSkills() {
+        return stateManager != null ? stateManager.getSkills() : null;
+    }
+
+    public SkillState getSkill(String name) {
+        return stateManager != null ? stateManager.getSkill(name) : null;
+    }
+
+    public List<EquipmentItem> getEquipment() {
+        return stateManager != null ? stateManager.getEquipment() : null;
+    }
 }
