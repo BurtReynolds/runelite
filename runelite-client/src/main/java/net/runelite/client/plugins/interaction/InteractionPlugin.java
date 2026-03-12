@@ -28,7 +28,9 @@ import net.runelite.client.plugins.objectdetection.ObjectDetectionPlugin;
 import net.runelite.client.ui.overlay.OverlayManager;
 
 import javax.inject.Inject;
+import java.awt.Canvas;
 import java.awt.Rectangle;
+import java.awt.event.KeyEvent;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -434,58 +436,60 @@ public class InteractionPlugin extends Plugin {
 	 * Click an inventory slot by index (0-27)
 	 */
 	public boolean clickInventorySlot(int slot, MouseMovementProfile profile) {
-		return runOnClientThread(() -> clickInventorySlotInternal(slot, profile));
-	}
+		java.awt.Point clickTarget = runOnClientThread(() -> {
+			if (slot < 0 || slot > 27) {
+				log.error("Invalid inventory slot: {} (must be 0-27)", slot);
+				return null;
+			}
 
-	private boolean clickInventorySlotInternal(int slot, MouseMovementProfile profile) {
-		if (slot < 0 || slot > 27) {
-			log.error("Invalid inventory slot: {} (must be 0-27)", slot);
-			return false;
-		}
+			Widget inventoryWidget = client.getWidget(WidgetInfo.INVENTORY);
+			if (inventoryWidget == null || inventoryWidget.isHidden()) {
+				log.warn("Inventory widget not visible");
+				return null;
+			}
 
-		Widget inventoryWidget = client.getWidget(WidgetInfo.INVENTORY);
-		if (inventoryWidget == null || inventoryWidget.isHidden()) {
-			log.warn("Inventory widget not visible");
-			return false;
-		}
+			Widget[] items = inventoryWidget.getDynamicChildren();
+			if (items == null || slot >= items.length) {
+				log.warn("Inventory slot {} not found", slot);
+				return null;
+			}
 
-		Widget[] items = inventoryWidget.getDynamicChildren();
-		if (items == null || slot >= items.length) {
-			log.warn("Inventory slot {} not found", slot);
-			return false;
-		}
-
-		return clickWidgetInternal(items[slot], profile);
+			return getWidgetClickPoint(items[slot], profile);
+		});
+		if (clickTarget == null) return false;
+		mouseMovement.moveAndClick(clickTarget, profile);
+		return true;
 	}
 
 	/**
 	 * Click an inventory item by name (clicks first match)
 	 */
 	public boolean clickInventoryItem(String itemName, MouseMovementProfile profile) {
-		return runOnClientThread(() -> clickInventoryItemInternal(itemName, profile));
-	}
-
-	private boolean clickInventoryItemInternal(String itemName, MouseMovementProfile profile) {
-		Widget inventoryWidget = client.getWidget(WidgetInfo.INVENTORY);
-		if (inventoryWidget == null || inventoryWidget.isHidden()) {
-			log.warn("Inventory widget not visible");
-			return false;
-		}
-
-		Widget[] items = inventoryWidget.getDynamicChildren();
-		if (items == null) {
-			return false;
-		}
-
-		for (Widget item : items) {
-			if (item != null && item.getName() != null && item.getName().contains(itemName)) {
-				log.info("Found inventory item: {}", itemName);
-				return clickWidgetInternal(item, profile);
+		java.awt.Point clickTarget = runOnClientThread(() -> {
+			Widget inventoryWidget = client.getWidget(WidgetInfo.INVENTORY);
+			if (inventoryWidget == null || inventoryWidget.isHidden()) {
+				log.warn("Inventory widget not visible");
+				return null;
 			}
-		}
 
-		log.warn("Inventory item '{}' not found", itemName);
-		return false;
+			Widget[] items = inventoryWidget.getDynamicChildren();
+			if (items == null) {
+				return null;
+			}
+
+			for (Widget item : items) {
+				if (item != null && item.getName() != null && item.getName().contains(itemName)) {
+					log.info("Found inventory item: {}", itemName);
+					return getWidgetClickPoint(item, profile);
+				}
+			}
+
+			log.warn("Inventory item '{}' not found", itemName);
+			return null;
+		});
+		if (clickTarget == null) return false;
+		mouseMovement.moveAndClick(clickTarget, profile);
+		return true;
 	}
 
 	/**
@@ -584,14 +588,17 @@ public class InteractionPlugin extends Plugin {
 			return false;
 		}
 
-		return runOnClientThread(() -> {
+		java.awt.Point clickTarget = runOnClientThread(() -> {
 			Widget slotWidget = client.getWidget(widgetId);
 			if (slotWidget == null || slotWidget.isHidden()) {
 				log.warn("Equipment slot {} widget not visible (is the equipment tab open?)", slot);
-				return false;
+				return null;
 			}
-			return clickWidgetInternal(slotWidget, profile);
+			return getWidgetClickPoint(slotWidget, profile);
 		});
+		if (clickTarget == null) return false;
+		mouseMovement.moveAndClick(clickTarget, profile);
+		return true;
 	}
 
 	/**
@@ -678,20 +685,23 @@ public class InteractionPlugin extends Plugin {
 	 * for an item whose name contains the search string.
 	 */
 	public boolean clickEquipmentItem(String itemName, MouseMovementProfile profile) {
-		return runOnClientThread(() -> {
+		java.awt.Point clickTarget = runOnClientThread(() -> {
 			EquipmentInventorySlot slot = findEquippedItemSlot(itemName);
-			if (slot == null) return false;
+			if (slot == null) return null;
 
 			int widgetId = getEquipmentSlotWidgetId(slot);
-			if (widgetId == -1) return false;
+			if (widgetId == -1) return null;
 
 			Widget slotWidget = client.getWidget(widgetId);
 			if (slotWidget == null || slotWidget.isHidden()) {
 				log.warn("Equipment slot {} widget not visible", slot);
-				return false;
+				return null;
 			}
-			return clickWidgetInternal(slotWidget, profile);
+			return getWidgetClickPoint(slotWidget, profile);
 		});
+		if (clickTarget == null) return false;
+		mouseMovement.moveAndClick(clickTarget, profile);
+		return true;
 	}
 
 	/**
@@ -1684,18 +1694,19 @@ public class InteractionPlugin extends Plugin {
 	 * This method can be called from any thread.
 	 */
 	public boolean openPlayerTab(PlayerTab tab, MouseMovementProfile profile) {
-		return runOnClientThread(() -> openPlayerTabInternal(tab, profile));
-	}
+		java.awt.Point clickTarget = runOnClientThread(() -> {
+			Widget tabWidget = findTabWidget(tab);
+			if (tabWidget == null) {
+				log.warn("Player tab {} widget not found in any viewport mode", tab);
+				return null;
+			}
 
-	private boolean openPlayerTabInternal(PlayerTab tab, MouseMovementProfile profile) {
-		Widget tabWidget = findTabWidget(tab);
-		if (tabWidget == null) {
-			log.warn("Player tab {} widget not found in any viewport mode", tab);
-			return false;
-		}
-
-		log.debug("Found tab {} widget: id={}", tab, tabWidget.getId());
-		return clickWidgetInternal(tabWidget, profile);
+			log.debug("Found tab {} widget: id={}", tab, tabWidget.getId());
+			return getWidgetClickPoint(tabWidget, profile);
+		});
+		if (clickTarget == null) return false;
+		mouseMovement.moveAndClick(clickTarget, profile);
+		return true;
 	}
 
 	/**
@@ -1787,16 +1798,19 @@ public class InteractionPlugin extends Plugin {
 	 * Toggle a prayer by widget ID
 	 */
 	public boolean togglePrayerByWidgetId(int groupId, int childId, MouseMovementProfile profile) {
-		return runOnClientThread(() -> {
+		java.awt.Point clickTarget = runOnClientThread(() -> {
 			Widget prayer = client.getWidget(groupId, childId);
 			if (prayer == null || prayer.isHidden()) {
 				log.warn("Prayer widget {}.{} not found or hidden", groupId, childId);
-				return false;
+				return null;
 			}
 
 			log.info("Toggling prayer widget {}.{}", groupId, childId);
-			return clickWidgetInternal(prayer, profile);
+			return getWidgetClickPoint(prayer, profile);
 		});
+		if (clickTarget == null) return false;
+		mouseMovement.moveAndClick(clickTarget, profile);
+		return true;
 	}
 
 	// ===== SKILLS INTERACTION =====
@@ -1805,16 +1819,19 @@ public class InteractionPlugin extends Plugin {
 	 * Click a skill by widget ID
 	 */
 	public boolean clickSkillByWidgetId(int groupId, int childId, MouseMovementProfile profile) {
-		return runOnClientThread(() -> {
+		java.awt.Point clickTarget = runOnClientThread(() -> {
 			Widget skill = client.getWidget(groupId, childId);
 			if (skill == null || skill.isHidden()) {
 				log.warn("Skill widget {}.{} not found or hidden", groupId, childId);
-				return false;
+				return null;
 			}
 
 			log.info("Clicking skill widget {}.{}", groupId, childId);
-			return clickWidgetInternal(skill, profile);
+			return getWidgetClickPoint(skill, profile);
 		});
+		if (clickTarget == null) return false;
+		mouseMovement.moveAndClick(clickTarget, profile);
+		return true;
 	}
 
 	// ===== GENERAL WIDGET INTERACTION =====
@@ -1823,49 +1840,66 @@ public class InteractionPlugin extends Plugin {
 	 * Click any widget by WidgetInfo
 	 */
 	public boolean clickWidgetByInfo(WidgetInfo widgetInfo, MouseMovementProfile profile) {
-		return runOnClientThread(() -> {
+		java.awt.Point clickTarget = runOnClientThread(() -> {
 			Widget widget = client.getWidget(widgetInfo);
 			if (widget == null) {
 				log.warn("Widget {} not found", widgetInfo);
-				return false;
+				return null;
 			}
-			return clickWidgetInternal(widget, profile);
+			return getWidgetClickPoint(widget, profile);
 		});
+		if (clickTarget == null) return false;
+		mouseMovement.moveAndClick(clickTarget, profile);
+		return true;
 	}
 
 	/**
-	 * Click a specific widget (thread-safe wrapper)
+	 * Click a specific widget (thread-safe wrapper).
+	 * Gets coordinates on client thread, moves/clicks off it so the game can render.
 	 */
 	public boolean clickWidget(Widget widget, MouseMovementProfile profile) {
-		return runOnClientThread(() -> clickWidgetInternal(widget, profile));
+		return clickWidgetSafe(widget, profile);
 	}
 
 	/**
-	 * Click a specific widget (internal, must be on client thread)
+	 * Safe widget click: reads coordinates on client thread, performs mouse
+	 * movement and click OFF the client thread so the game keeps rendering.
+	 * This is the standard way to click any widget.
 	 */
-	private boolean clickWidgetInternal(Widget widget, MouseMovementProfile profile) {
+	private boolean clickWidgetSafe(Widget widget, MouseMovementProfile profile) {
+		// Step 1: Get click target coordinates on client thread
+		java.awt.Point clickTarget = runOnClientThread(() -> getWidgetClickPoint(widget, profile));
+		if (clickTarget == null) {
+			return false;
+		}
+
+		// Step 2: Move and click OFF the client thread (allows game to render during movement)
+		mouseMovement.moveAndClick(clickTarget, profile);
+		log.info("Clicked widget at ({}, {})", clickTarget.x, clickTarget.y);
+		return true;
+	}
+
+	/**
+	 * Get the click target point for a widget (must be called on client thread).
+	 * Returns null if the widget is null, hidden, or has no screen position.
+	 */
+	private java.awt.Point getWidgetClickPoint(Widget widget, MouseMovementProfile profile) {
 		if (widget == null || widget.isHidden()) {
 			log.warn("Widget is null or hidden");
-			return false;
+			return null;
 		}
 
 		Point screenPoint = getWidgetScreenPoint(widget);
 		if (screenPoint == null) {
 			log.warn("Could not get screen coordinates for widget");
-			return false;
+			return null;
 		}
 
 		// Add jitter from profile
 		int jitterX = (int) ((Math.random() - 0.5) * profile.jitterRadius * 2);
 		int jitterY = (int) ((Math.random() - 0.5) * profile.jitterRadius * 2);
 
-		mouseMovement.moveAndClick(
-			new java.awt.Point(screenPoint.getX() + jitterX, screenPoint.getY() + jitterY),
-			profile
-		);
-
-		log.info("Clicked widget at ({}, {})", screenPoint.getX(), screenPoint.getY());
-		return true;
+		return new java.awt.Point(screenPoint.getX() + jitterX, screenPoint.getY() + jitterY);
 	}
 
 	// ===== BANK INTERACTION =====
@@ -1884,11 +1918,11 @@ public class InteractionPlugin extends Plugin {
 	 * Close the bank interface by clicking the close button (top-right X).
 	 */
 	public boolean closeBank(MouseMovementProfile profile) {
-		return runOnClientThread(() -> {
+		java.awt.Point clickTarget = runOnClientThread(() -> {
 			Widget bankFrame = client.getWidget(InterfaceID.Bankmain.FRAME);
 			if (bankFrame == null || bankFrame.isHidden()) {
 				log.warn("Bank is not open");
-				return false;
+				return null;
 			}
 
 			// The close button is child 11 of the FRAME widget
@@ -1896,7 +1930,7 @@ public class InteractionPlugin extends Plugin {
 			if (children != null && children.length > 11) {
 				Widget closeButton = children[11];
 				if (closeButton != null && !closeButton.isHidden()) {
-					return clickWidgetInternal(closeButton, profile);
+					return getWidgetClickPoint(closeButton, profile);
 				}
 			}
 
@@ -1905,13 +1939,16 @@ public class InteractionPlugin extends Plugin {
 			if (staticChildren != null && staticChildren.length > 11) {
 				Widget closeButton = staticChildren[11];
 				if (closeButton != null && !closeButton.isHidden()) {
-					return clickWidgetInternal(closeButton, profile);
+					return getWidgetClickPoint(closeButton, profile);
 				}
 			}
 
 			log.warn("Could not find bank close button");
-			return false;
+			return null;
 		});
+		if (clickTarget == null) return false;
+		mouseMovement.moveAndClick(clickTarget, profile);
+		return true;
 	}
 
 	/**
@@ -2088,8 +2125,11 @@ public class InteractionPlugin extends Plugin {
 			}
 		}
 
-		// Now click it
-		return runOnClientThread(() -> clickWidgetInternal(item, profile));
+		// Get screen point on client thread, then click off it
+		java.awt.Point clickTarget = runOnClientThread(() -> getWidgetClickPoint(item, profile));
+		if (clickTarget == null) return false;
+		mouseMovement.moveAndClick(clickTarget, profile);
+		return true;
 	}
 
 	/**
@@ -2161,11 +2201,14 @@ public class InteractionPlugin extends Plugin {
 	 * Click an item in the bank inventory panel (deposit it with default quantity).
 	 */
 	public boolean clickBankInventoryItem(String itemName, MouseMovementProfile profile) {
-		return runOnClientThread(() -> {
+		java.awt.Point clickTarget = runOnClientThread(() -> {
 			Widget item = findBankInventoryItemWidget(itemName);
-			if (item == null) return false;
-			return clickWidgetInternal(item, profile);
+			if (item == null) return null;
+			return getWidgetClickPoint(item, profile);
 		});
+		if (clickTarget == null) return false;
+		mouseMovement.moveAndClick(clickTarget, profile);
+		return true;
 	}
 
 	/**
@@ -2194,28 +2237,34 @@ public class InteractionPlugin extends Plugin {
 	 * Click the "Deposit inventory" button in the bank interface.
 	 */
 	public boolean depositInventory(MouseMovementProfile profile) {
-		return runOnClientThread(() -> {
+		java.awt.Point clickTarget = runOnClientThread(() -> {
 			Widget depositInv = client.getWidget(InterfaceID.Bankmain.DEPOSITINV);
 			if (depositInv == null || depositInv.isHidden()) {
 				log.warn("Deposit inventory button not visible");
-				return false;
+				return null;
 			}
-			return clickWidgetInternal(depositInv, profile);
+			return getWidgetClickPoint(depositInv, profile);
 		});
+		if (clickTarget == null) return false;
+		mouseMovement.moveAndClick(clickTarget, profile);
+		return true;
 	}
 
 	/**
 	 * Click the "Deposit worn items" button in the bank interface.
 	 */
 	public boolean depositEquipment(MouseMovementProfile profile) {
-		return runOnClientThread(() -> {
+		java.awt.Point clickTarget = runOnClientThread(() -> {
 			Widget depositWorn = client.getWidget(InterfaceID.Bankmain.DEPOSITWORN);
 			if (depositWorn == null || depositWorn.isHidden()) {
 				log.warn("Deposit worn items button not visible");
-				return false;
+				return null;
 			}
-			return clickWidgetInternal(depositWorn, profile);
+			return getWidgetClickPoint(depositWorn, profile);
 		});
+		if (clickTarget == null) return false;
+		mouseMovement.moveAndClick(clickTarget, profile);
+		return true;
 	}
 
 	/**
@@ -2223,17 +2272,17 @@ public class InteractionPlugin extends Plugin {
 	 * The bank must be open.
 	 */
 	public boolean clickBankTab(int tabIndex, MouseMovementProfile profile) {
-		return runOnClientThread(() -> {
+		java.awt.Point clickTarget = runOnClientThread(() -> {
 			Widget tabContainer = client.getWidget(InterfaceID.Bankmain.TABS);
 			if (tabContainer == null || tabContainer.isHidden()) {
 				log.warn("Bank tab container not visible");
-				return false;
+				return null;
 			}
 
 			Widget[] children = tabContainer.getDynamicChildren();
 			if (children == null) {
 				log.warn("Bank tab container has no children");
-				return false;
+				return null;
 			}
 
 			// Tab widgets are dynamic children of the TABS container.
@@ -2242,18 +2291,21 @@ public class InteractionPlugin extends Plugin {
 			int widgetIndex = 10 + tabIndex;
 			if (widgetIndex >= children.length) {
 				log.warn("Bank tab index {} out of range (max children: {})", tabIndex, children.length);
-				return false;
+				return null;
 			}
 
 			Widget tabWidget = children[widgetIndex];
 			if (tabWidget == null || tabWidget.isHidden()) {
 				log.warn("Bank tab {} widget is null or hidden", tabIndex);
-				return false;
+				return null;
 			}
 
 			log.info("Clicking bank tab {}", tabIndex);
-			return clickWidgetInternal(tabWidget, profile);
+			return getWidgetClickPoint(tabWidget, profile);
 		});
+		if (clickTarget == null) return false;
+		mouseMovement.moveAndClick(clickTarget, profile);
+		return true;
 	}
 
 	/**
@@ -2261,7 +2313,7 @@ public class InteractionPlugin extends Plugin {
 	 * Valid values: 1, 5, 10, -1 (X), 0 (All)
 	 */
 	public boolean setBankQuantity(int quantity, MouseMovementProfile profile) {
-		return runOnClientThread(() -> {
+		java.awt.Point clickTarget = runOnClientThread(() -> {
 			int widgetId;
 			switch (quantity) {
 				case 1:  widgetId = InterfaceID.Bankmain.QUANTITY1; break;
@@ -2271,48 +2323,57 @@ public class InteractionPlugin extends Plugin {
 				case 0:  widgetId = InterfaceID.Bankmain.QUANTITYALL; break;
 				default:
 					log.warn("Invalid bank quantity: {} (valid: 1, 5, 10, -1 for X, 0 for All)", quantity);
-					return false;
+					return null;
 			}
 
 			Widget quantityWidget = client.getWidget(widgetId);
 			if (quantityWidget == null || quantityWidget.isHidden()) {
 				log.warn("Bank quantity button not visible for quantity={}", quantity);
-				return false;
+				return null;
 			}
 
 			log.info("Setting bank quantity to {}", quantity == -1 ? "X" : quantity == 0 ? "All" : quantity);
-			return clickWidgetInternal(quantityWidget, profile);
+			return getWidgetClickPoint(quantityWidget, profile);
 		});
+		if (clickTarget == null) return false;
+		mouseMovement.moveAndClick(clickTarget, profile);
+		return true;
 	}
 
 	/**
 	 * Toggle the bank note/item withdrawal mode.
 	 */
 	public boolean toggleBankNoteMode(MouseMovementProfile profile) {
-		return runOnClientThread(() -> {
+		java.awt.Point clickTarget = runOnClientThread(() -> {
 			Widget noteWidget = client.getWidget(InterfaceID.Bankmain.NOTE);
 			if (noteWidget == null || noteWidget.isHidden()) {
 				log.warn("Bank note toggle button not visible");
-				return false;
+				return null;
 			}
 			log.info("Toggling bank note mode");
-			return clickWidgetInternal(noteWidget, profile);
+			return getWidgetClickPoint(noteWidget, profile);
 		});
+		if (clickTarget == null) return false;
+		mouseMovement.moveAndClick(clickTarget, profile);
+		return true;
 	}
 
 	/**
 	 * Click the bank search button to activate search mode.
 	 */
 	public boolean clickBankSearch(MouseMovementProfile profile) {
-		return runOnClientThread(() -> {
+		java.awt.Point clickTarget = runOnClientThread(() -> {
 			Widget searchWidget = client.getWidget(InterfaceID.Bankmain.SEARCH);
 			if (searchWidget == null || searchWidget.isHidden()) {
 				log.warn("Bank search button not visible");
-				return false;
+				return null;
 			}
 			log.info("Clicking bank search button");
-			return clickWidgetInternal(searchWidget, profile);
+			return getWidgetClickPoint(searchWidget, profile);
 		});
+		if (clickTarget == null) return false;
+		mouseMovement.moveAndClick(clickTarget, profile);
+		return true;
 	}
 
 	/**
@@ -2539,6 +2600,736 @@ public class InteractionPlugin extends Plugin {
 		int y = (int) (bounds.getY() + bounds.getHeight() / 2);
 
 		return new Point(x, y);
+	}
+
+	// ===== CAMERA CONTROL =====
+
+	/**
+	 * Get the current camera state (yaw, pitch).
+	 * Yaw: 0-2047 (JAU, Jagex Angle Units, 1/1024 of a revolution = ~0.35 degrees)
+	 * Pitch: typically 128 (max up) to 383 (max down)
+	 */
+	public java.util.Map<String, Object> getCameraState() {
+		return runOnClientThread(() -> {
+			java.util.Map<String, Object> state = new java.util.LinkedHashMap<>();
+			state.put("yaw", client.getCameraYaw());
+			state.put("pitch", client.getCameraPitch());
+			state.put("yawTarget", client.getCameraYawTarget());
+			state.put("pitchTarget", client.getCameraPitchTarget());
+			state.put("yawDegrees", Math.round(client.getCameraYaw() * 360.0 / 2048));
+			state.put("pitchDegrees", Math.round(client.getCameraPitch() * 360.0 / 2048));
+			state.put("zoom", client.getVarcIntValue(VarClientID.CAMERA_ZOOM_BIG));
+			return state;
+		});
+	}
+
+	/**
+	 * Smoothly rotate the camera yaw using arrow key simulation.
+	 * @param yaw 0-2047 in JAU (0=North, 512=East, 1024=South, 1536=West)
+	 */
+	public void setCameraYaw(int yaw) {
+		rotateCameraSmooth(yaw & 0x7FF);
+	}
+
+	/**
+	 * Smoothly tilt the camera pitch using arrow key simulation (VK_UP / VK_DOWN).
+	 * @param pitch typically 128 (looking up) to 383 (looking down)
+	 */
+	public void setCameraPitch(int pitch) {
+		int clamped = Math.max(128, Math.min(383, pitch));
+		tiltCameraSmooth(clamped);
+	}
+
+	/**
+	 * Rotate the camera to face a specific compass direction.
+	 * Uses arrow key events for smooth, human-like rotation.
+	 * @param direction "north", "south", "east", "west", or degrees (0-359)
+	 */
+	public void setCameraDirection(String direction) {
+		int targetYaw;
+		switch (direction.toLowerCase()) {
+			case "north": targetYaw = 0; break;
+			case "east":  targetYaw = 512; break;
+			case "south": targetYaw = 1024; break;
+			case "west":  targetYaw = 1536; break;
+			default:
+				try {
+					int degrees = Integer.parseInt(direction);
+					targetYaw = (int) (degrees * 2048.0 / 360) & 0x7FF;
+				} catch (NumberFormatException e) {
+					log.warn("Invalid camera direction: {}", direction);
+					return;
+				}
+		}
+		setCameraYaw(targetYaw);
+	}
+
+	/**
+	 * Smoothly rotate the camera toward a world point so the target is roughly centered on screen.
+	 * Calculates the yaw angle from the player to the target tile.
+	 */
+	public void lookAtTile(WorldPoint target) {
+		WorldPoint playerLoc = runOnClientThread(() -> client.getLocalPlayer().getWorldLocation());
+		if (playerLoc == null) return;
+
+		int dx = target.getX() - playerLoc.getX();
+		int dy = target.getY() - playerLoc.getY();
+
+		// OSRS yaw: 0=North(+Y), 512=East(+X), 1024=South(-Y), 1536=West(-X)
+		// atan2 gives angle from +X axis counterclockwise, we need CW from +Y
+		double angleRad = Math.atan2(dx, dy); // Note: atan2(x, y) gives CW from +Y
+		int yaw = (int) (angleRad * 2048.0 / (2 * Math.PI)) & 0x7FF;
+
+		setCameraYaw(yaw);
+	}
+
+	/**
+	 * Smoothly rotate camera yaw via arrow key simulation (VK_LEFT / VK_RIGHT).
+	 * Chooses the shortest rotation direction around the 0-2047 wrap-around.
+	 * Holds the key pressed while polling camera yaw each tick, releasing when close to target.
+	 */
+	private void rotateCameraSmooth(int targetYaw) {
+		Canvas canvas = client.getCanvas();
+		if (canvas == null) {
+			log.error("Canvas not available for camera rotation");
+			return;
+		}
+
+		int currentYaw = runOnClientThread(() -> client.getCameraYaw());
+
+		// Calculate signed shortest distance in JAU (wraps around 2048)
+		int diff = targetYaw - currentYaw;
+		// Normalize to [-1024, 1024)
+		if (diff > 1024) diff -= 2048;
+		if (diff < -1024) diff += 2048;
+
+		int absDiff = Math.abs(diff);
+		if (absDiff < 16) {
+			// Already close enough, no need to rotate
+			return;
+		}
+
+		// Choose key: positive diff = rotate right (VK_RIGHT), negative = rotate left (VK_LEFT)
+		int keyCode = diff > 0 ? KeyEvent.VK_RIGHT : KeyEvent.VK_LEFT;
+		char keyChar = KeyEvent.CHAR_UNDEFINED;
+
+		// Dispatch KEY_PRESSED to start rotation
+		canvas.dispatchEvent(new KeyEvent(
+			canvas,
+			KeyEvent.KEY_PRESSED,
+			System.currentTimeMillis(),
+			0,
+			keyCode,
+			keyChar
+		));
+
+		try {
+			// Poll camera position until we reach the target (or timeout)
+			long startTime = System.currentTimeMillis();
+			long maxDurationMs = Math.max(200, (long) (absDiff * 2.5)); // Rough estimate, ~2.5ms per JAU
+			maxDurationMs = Math.min(maxDurationMs, 5000); // Safety cap at 5 seconds
+			int threshold = 32; // Close enough threshold in JAU (~5.6 degrees)
+
+			int prevYaw = currentYaw;
+			boolean overshoot = false;
+
+			while (System.currentTimeMillis() - startTime < maxDurationMs) {
+				sleep(16); // ~1 game tick polling rate (60fps)
+
+				int nowYaw = runOnClientThread(() -> client.getCameraYaw());
+
+				// Check if we're close to target
+				int remaining = targetYaw - nowYaw;
+				if (remaining > 1024) remaining -= 2048;
+				if (remaining < -1024) remaining += 2048;
+
+				if (Math.abs(remaining) < threshold) {
+					break; // Reached target
+				}
+
+				// Check for overshoot: if remaining changed sign, we passed the target
+				int prevRemaining = targetYaw - prevYaw;
+				if (prevRemaining > 1024) prevRemaining -= 2048;
+				if (prevRemaining < -1024) prevRemaining += 2048;
+
+				if ((prevRemaining > 0 && remaining < 0) || (prevRemaining < 0 && remaining > 0)) {
+					overshoot = true;
+					break;
+				}
+
+				prevYaw = nowYaw;
+			}
+
+			if (overshoot) {
+				log.debug("Camera yaw overshot target, close enough");
+			}
+		} finally {
+			// Always release the key
+			canvas.dispatchEvent(new KeyEvent(
+				canvas,
+				KeyEvent.KEY_RELEASED,
+				System.currentTimeMillis(),
+				0,
+				keyCode,
+				keyChar
+			));
+		}
+
+		log.debug("Camera yaw rotation complete: target={}, actual={}",
+			targetYaw, runOnClientThread(() -> client.getCameraYaw()));
+	}
+
+	/**
+	 * Smoothly tilt camera pitch via arrow key simulation (VK_UP / VK_DOWN).
+	 * Dispatches key events on the canvas and polls until the pitch reaches the target.
+	 * Self-corrects direction if the initial guess is wrong.
+	 */
+	private void tiltCameraSmooth(int targetPitch) {
+		Canvas canvas = client.getCanvas();
+		if (canvas == null) {
+			log.error("Canvas not available for camera pitch");
+			return;
+		}
+
+		int currentPitch = runOnClientThread(() -> client.getCameraPitch());
+		int diff = targetPitch - currentPitch;
+
+		log.info("Camera pitch tilt: current={}, target={}, diff={}", currentPitch, targetPitch, diff);
+
+		if (Math.abs(diff) < 5) {
+			log.info("Camera pitch already at target");
+			return;
+		}
+
+		// OSRS pitch: 128 = camera low/horizontal, 383 = camera high/top-down
+		// Try VK_UP for positive diff first — will self-correct if wrong
+		int keyCode = diff > 0 ? KeyEvent.VK_UP : KeyEvent.VK_DOWN;
+
+		log.info("Dispatching {} key for pitch adjustment (diff={})", keyCode == KeyEvent.VK_UP ? "VK_UP" : "VK_DOWN", diff);
+
+		canvas.dispatchEvent(new KeyEvent(
+			canvas, KeyEvent.KEY_PRESSED, System.currentTimeMillis(), 0,
+			keyCode, KeyEvent.CHAR_UNDEFINED
+		));
+
+		try {
+			long startTime = System.currentTimeMillis();
+			int absDiff = Math.abs(diff);
+			long maxDurationMs = Math.max(800, (long) (absDiff * 15));
+			maxDurationMs = Math.min(maxDurationMs, 6000);
+			int threshold = 8;
+			int staleCount = 0;
+			int prevPitch = currentPitch;
+			boolean directionCorrected = false;
+
+			while (System.currentTimeMillis() - startTime < maxDurationMs) {
+				sleep(20);
+
+				int nowPitch = runOnClientThread(() -> client.getCameraPitch());
+				int remaining = targetPitch - nowPitch;
+
+				if (Math.abs(remaining) < threshold) {
+					log.info("Camera pitch reached target: actual={}, target={}", nowPitch, targetPitch);
+					break;
+				}
+
+				// Check if pitch is moving the wrong direction and self-correct
+				if (!directionCorrected && nowPitch != currentPitch) {
+					boolean movingRight = (diff > 0 && nowPitch > currentPitch) || (diff < 0 && nowPitch < currentPitch);
+					if (!movingRight) {
+						log.info("Camera pitch moving wrong direction (now={}, was={}), flipping key", nowPitch, currentPitch);
+						// Release current key
+						canvas.dispatchEvent(new KeyEvent(
+							canvas, KeyEvent.KEY_RELEASED, System.currentTimeMillis(), 0,
+							keyCode, KeyEvent.CHAR_UNDEFINED
+						));
+						sleep(30);
+						// Flip to opposite key
+						keyCode = (keyCode == KeyEvent.VK_UP) ? KeyEvent.VK_DOWN : KeyEvent.VK_UP;
+						canvas.dispatchEvent(new KeyEvent(
+							canvas, KeyEvent.KEY_PRESSED, System.currentTimeMillis(), 0,
+							keyCode, KeyEvent.CHAR_UNDEFINED
+						));
+						directionCorrected = true;
+						prevPitch = nowPitch;
+						continue;
+					}
+					directionCorrected = true; // Correct direction confirmed
+				}
+
+				// Overshoot detection (only after direction is confirmed)
+				if (directionCorrected && prevPitch != currentPitch) {
+					int prevRemaining = targetPitch - prevPitch;
+					if (prevRemaining != 0 && remaining != 0 &&
+						((prevRemaining > 0 && remaining < 0) || (prevRemaining < 0 && remaining > 0))) {
+						log.info("Camera pitch overshot: actual={}, target={}", nowPitch, targetPitch);
+						break;
+					}
+				}
+
+				if (nowPitch == prevPitch) {
+					staleCount++;
+					if (staleCount > 15) {
+						log.warn("Camera pitch not responding after {}ms, stuck at {}",
+							System.currentTimeMillis() - startTime, nowPitch);
+						break;
+					}
+				} else {
+					staleCount = 0;
+				}
+
+				prevPitch = nowPitch;
+			}
+		} finally {
+			canvas.dispatchEvent(new KeyEvent(
+				canvas, KeyEvent.KEY_RELEASED, System.currentTimeMillis(), 0,
+				keyCode, KeyEvent.CHAR_UNDEFINED
+			));
+		}
+
+		int finalPitch = runOnClientThread(() -> client.getCameraPitch());
+		log.info("Camera pitch tilt complete: target={}, actual={}", targetPitch, finalPitch);
+	}
+
+	/**
+	 * Get the current camera zoom level.
+	 * Higher values = more zoomed in. Typical range ~170 (far out) to ~1400 (close up).
+	 */
+	public int getCameraZoom() {
+		return runOnClientThread(() -> client.getVarcIntValue(VarClientID.CAMERA_ZOOM_BIG));
+	}
+
+	/**
+	 * Smoothly zoom the camera with default speed (1.0).
+	 * @param zoom target zoom value (higher = more zoomed in, typical range ~170-1004)
+	 */
+	public void setCameraZoom(int zoom) {
+		setCameraZoom(zoom, 1.0);
+	}
+
+	/**
+	 * Smoothly zoom the camera by stepping through intermediate zoom values
+	 * using the game's CAMERA_DO_ZOOM script, with human-like timing.
+	 * @param zoom target zoom value (higher = more zoomed in, typical range ~170-1004)
+	 * @param speed speed multiplier (1.0 = default, 2.0 = twice as fast, 0.5 = half speed)
+	 */
+	public void setCameraZoom(int zoom, double speed) {
+		int clamped = Math.max(0, zoom);
+		double clampedSpeed = Math.max(0.1, Math.min(5.0, speed));
+		zoomCameraSmooth(clamped, clampedSpeed);
+	}
+
+	/**
+	 * Smoothly zoom camera via incremental CAMERA_DO_ZOOM script calls.
+	 * Steps through intermediate zoom values with eased timing to produce
+	 * natural-looking zoom like a human scrolling the mouse wheel.
+	 * @param speed multiplier for zoom speed (1.0 = default, higher = faster)
+	 */
+	private void zoomCameraSmooth(int targetZoom, double speedMultiplier) {
+		int currentZoom = runOnClientThread(() -> client.getVarcIntValue(VarClientID.CAMERA_ZOOM_BIG));
+		int diff = targetZoom - currentZoom;
+
+		log.info("Camera zoom: current={}, target={}, diff={}, speed={}", currentZoom, targetZoom, diff, speedMultiplier);
+
+		if (Math.abs(diff) < 10) {
+			log.info("Camera zoom already at target");
+			return;
+		}
+
+		int absDiff = Math.abs(diff);
+		// Step size scales with speed — faster speed = bigger steps = fewer total steps
+		int stepSize = (int)(25 * Math.max(1.0, speedMultiplier));
+		int totalSteps = Math.max(1, absDiff / stepSize);
+		// Cap steps so we don't take forever on huge zooms
+		totalSteps = Math.min(totalSteps, 40);
+
+		for (int i = 1; i <= totalSteps; i++) {
+			double t = (double) i / totalSteps;
+			int intermediateZoom = currentZoom + (int)(diff * t);
+			intermediateZoom = Math.max(0, intermediateZoom);
+
+			final int zoomValue = intermediateZoom;
+			clientThread.invokeLater(() -> client.runScript(ScriptID.CAMERA_DO_ZOOM, zoomValue, zoomValue));
+
+			// Human-like delay between steps: faster in the middle, slower at start/end
+			double easeSpeed;
+			if (t < 0.2) {
+				double phase = t / 0.2;
+				easeSpeed = 0.5 + 2.5 * phase;
+			} else if (t < 0.7) {
+				easeSpeed = 3.0;
+			} else {
+				double phase = (t - 0.7) / 0.3;
+				easeSpeed = 3.0 - 2.5 * phase;
+			}
+			// Base delay: ~33ms at max ease speed, ~200ms at min ease speed
+			// Then divided by the user speed multiplier
+			int delayMs = (int)(100.0 / (easeSpeed * speedMultiplier));
+			delayMs += (int)(Math.random() * 10);
+			// Floor at 10ms to avoid spamming
+			delayMs = Math.max(10, delayMs);
+
+			sleep(delayMs);
+		}
+
+		// Final precise set to exact target
+		clientThread.invokeLater(() -> client.runScript(ScriptID.CAMERA_DO_ZOOM, targetZoom, targetZoom));
+		sleep(50);
+
+		int finalZoom = runOnClientThread(() -> client.getVarcIntValue(VarClientID.CAMERA_ZOOM_BIG));
+		log.info("Camera zoom complete: target={}, actual={}, steps={}, speed={}", targetZoom, finalZoom, totalSteps, speedMultiplier);
+	}
+
+	/**
+	 * Check if a world point is currently visible on screen (within the game viewport).
+	 */
+	public boolean isOnScreen(WorldPoint worldPoint) {
+		Boolean result = runOnClientThread(() -> {
+			int sceneX = worldPoint.getX() - client.getBaseX();
+			int sceneY = worldPoint.getY() - client.getBaseY();
+			if (sceneX < 0 || sceneX >= 104 || sceneY < 0 || sceneY >= 104) return false;
+
+			net.runelite.api.coords.LocalPoint lp = net.runelite.api.coords.LocalPoint.fromScene(sceneX, sceneY);
+			if (lp == null) return false;
+
+			Point sp = net.runelite.api.Perspective.localToCanvas(client, lp, client.getPlane());
+			if (sp == null) return false;
+
+			int canvasW = client.getCanvasWidth();
+			int canvasH = client.getCanvasHeight();
+			return sp.getX() >= 0 && sp.getX() < canvasW && sp.getY() >= 0 && sp.getY() < canvasH;
+		});
+		return Boolean.TRUE.equals(result);
+	}
+
+	// ===== RUN ENERGY =====
+
+	/**
+	 * Get current run energy (0-10000, where 10000 = 100%).
+	 */
+	public int getRunEnergy() {
+		return runOnClientThread(() -> client.getEnergy());
+	}
+
+	/**
+	 * Check if run is currently enabled by reading the VarPlayer.
+	 */
+	public boolean isRunEnabled() {
+		return runOnClientThread(() -> client.getVarpValue(173) == 1);
+	}
+
+	/**
+	 * Toggle run on/off by clicking the run orb on the minimap.
+	 */
+	public boolean toggleRun(MouseMovementProfile profile) {
+		java.awt.Point clickTarget = runOnClientThread(() -> {
+			Widget runOrb = client.getWidget(net.runelite.api.widgets.WidgetInfo.MINIMAP_TOGGLE_RUN_ORB);
+			if (runOrb == null || runOrb.isHidden()) {
+				log.warn("Run orb widget not visible");
+				return null;
+			}
+			return getWidgetClickPoint(runOrb, profile);
+		});
+		if (clickTarget == null) return false;
+		mouseMovement.moveAndClick(clickTarget, profile);
+		return true;
+	}
+
+	/**
+	 * Get run state info.
+	 */
+	public java.util.Map<String, Object> getRunState() {
+		return runOnClientThread(() -> {
+			java.util.Map<String, Object> state = new java.util.LinkedHashMap<>();
+			state.put("energy", client.getEnergy());
+			state.put("energyPercent", client.getEnergy() / 100);
+			state.put("enabled", client.getVarpValue(173) == 1);
+			state.put("weight", client.getWeight());
+			return state;
+		});
+	}
+
+	// ===== GROUND ITEMS =====
+
+	/**
+	 * Get all ground items at a specific world location.
+	 */
+	public java.util.List<java.util.Map<String, Object>> getGroundItemsAt(WorldPoint location) {
+		return runOnClientThread(() -> {
+			java.util.List<java.util.Map<String, Object>> items = new java.util.ArrayList<>();
+
+			int sceneX = location.getX() - client.getBaseX();
+			int sceneY = location.getY() - client.getBaseY();
+			if (sceneX < 0 || sceneX >= 104 || sceneY < 0 || sceneY >= 104) return items;
+
+			net.runelite.api.Scene scene = client.getScene();
+			net.runelite.api.Tile tile = scene.getTiles()[client.getPlane()][sceneX][sceneY];
+			if (tile == null) return items;
+
+			java.util.List<net.runelite.api.TileItem> groundItems = tile.getGroundItems();
+			if (groundItems == null) return items;
+
+			for (net.runelite.api.TileItem gi : groundItems) {
+				ItemComposition comp = client.getItemDefinition(gi.getId());
+				java.util.Map<String, Object> entry = new java.util.LinkedHashMap<>();
+				entry.put("id", gi.getId());
+				entry.put("name", comp.getName());
+				entry.put("quantity", gi.getQuantity());
+				entry.put("x", location.getX());
+				entry.put("y", location.getY());
+				entry.put("plane", location.getPlane());
+				items.add(entry);
+			}
+			return items;
+		});
+	}
+
+	/**
+	 * Get all ground items near the player within a radius.
+	 */
+	public java.util.List<java.util.Map<String, Object>> getGroundItemsNearby(int radius) {
+		return runOnClientThread(() -> {
+			java.util.List<java.util.Map<String, Object>> allItems = new java.util.ArrayList<>();
+			WorldPoint playerLoc = client.getLocalPlayer().getWorldLocation();
+			int plane = client.getPlane();
+
+			net.runelite.api.Scene scene = client.getScene();
+			net.runelite.api.Tile[][][] tiles = scene.getTiles();
+
+			for (int dx = -radius; dx <= radius; dx++) {
+				for (int dy = -radius; dy <= radius; dy++) {
+					int sceneX = playerLoc.getX() - client.getBaseX() + dx;
+					int sceneY = playerLoc.getY() - client.getBaseY() + dy;
+					if (sceneX < 0 || sceneX >= 104 || sceneY < 0 || sceneY >= 104) continue;
+
+					net.runelite.api.Tile tile = tiles[plane][sceneX][sceneY];
+					if (tile == null) continue;
+
+					java.util.List<net.runelite.api.TileItem> groundItems = tile.getGroundItems();
+					if (groundItems == null) continue;
+
+					for (net.runelite.api.TileItem gi : groundItems) {
+						ItemComposition comp = client.getItemDefinition(gi.getId());
+						java.util.Map<String, Object> entry = new java.util.LinkedHashMap<>();
+						entry.put("id", gi.getId());
+						entry.put("name", comp.getName());
+						entry.put("quantity", gi.getQuantity());
+						entry.put("x", playerLoc.getX() + dx);
+						entry.put("y", playerLoc.getY() + dy);
+						entry.put("plane", plane);
+						entry.put("distance", Math.max(Math.abs(dx), Math.abs(dy)));
+						allItems.add(entry);
+					}
+				}
+			}
+
+			// Sort by distance
+			allItems.sort((a, b) -> Integer.compare(
+				((Number) a.get("distance")).intValue(),
+				((Number) b.get("distance")).intValue()
+			));
+
+			return allItems;
+		});
+	}
+
+	/**
+	 * Click a ground item by name near the player.
+	 * Finds the closest tile with that item and clicks it on screen.
+	 */
+	public boolean clickGroundItem(String itemName, MouseMovementProfile profile) {
+		java.awt.Point clickTarget = runOnClientThread(() -> {
+			WorldPoint playerLoc = client.getLocalPlayer().getWorldLocation();
+			int plane = client.getPlane();
+			net.runelite.api.Scene scene = client.getScene();
+			net.runelite.api.Tile[][][] tiles = scene.getTiles();
+
+			// Search outward for the item
+			for (int r = 0; r <= 15; r++) {
+				for (int dx = -r; dx <= r; dx++) {
+					for (int dy = -r; dy <= r; dy++) {
+						if (Math.abs(dx) != r && Math.abs(dy) != r) continue; // Only check perimeter
+						int sceneX = playerLoc.getX() - client.getBaseX() + dx;
+						int sceneY = playerLoc.getY() - client.getBaseY() + dy;
+						if (sceneX < 0 || sceneX >= 104 || sceneY < 0 || sceneY >= 104) continue;
+
+						net.runelite.api.Tile tile = tiles[plane][sceneX][sceneY];
+						if (tile == null) continue;
+
+						java.util.List<net.runelite.api.TileItem> groundItems = tile.getGroundItems();
+						if (groundItems == null) continue;
+
+						for (net.runelite.api.TileItem gi : groundItems) {
+							ItemComposition comp = client.getItemDefinition(gi.getId());
+							if (comp.getName() != null && comp.getName().toLowerCase().contains(itemName.toLowerCase())) {
+								net.runelite.api.coords.LocalPoint lp = net.runelite.api.coords.LocalPoint.fromScene(sceneX, sceneY);
+								if (lp == null) continue;
+								Point sp = net.runelite.api.Perspective.localToCanvas(client, lp, plane);
+								if (sp == null) continue;
+
+								int jitterX = (int) ((Math.random() - 0.5) * 8);
+								int jitterY = (int) ((Math.random() - 0.5) * 8);
+								return new java.awt.Point(sp.getX() + jitterX, sp.getY() + jitterY);
+							}
+						}
+					}
+				}
+			}
+
+			log.warn("Ground item '{}' not found nearby", itemName);
+			return null;
+		});
+
+		if (clickTarget == null) return false;
+		mouseMovement.moveAndClick(clickTarget, profile);
+		log.info("Clicked ground item '{}'", itemName);
+		return true;
+	}
+
+	/**
+	 * Right-click a ground item and select an action (e.g., "Take").
+	 */
+	public boolean rightClickGroundItemAndSelect(String itemName, String action, MouseMovementProfile profile) {
+		java.awt.Point itemPoint = runOnClientThread(() -> {
+			WorldPoint playerLoc = client.getLocalPlayer().getWorldLocation();
+			int plane = client.getPlane();
+			net.runelite.api.Scene scene = client.getScene();
+			net.runelite.api.Tile[][][] tiles = scene.getTiles();
+
+			for (int r = 0; r <= 15; r++) {
+				for (int dx = -r; dx <= r; dx++) {
+					for (int dy = -r; dy <= r; dy++) {
+						if (Math.abs(dx) != r && Math.abs(dy) != r) continue;
+						int sceneX = playerLoc.getX() - client.getBaseX() + dx;
+						int sceneY = playerLoc.getY() - client.getBaseY() + dy;
+						if (sceneX < 0 || sceneX >= 104 || sceneY < 0 || sceneY >= 104) continue;
+
+						net.runelite.api.Tile tile = tiles[plane][sceneX][sceneY];
+						if (tile == null) continue;
+
+						java.util.List<net.runelite.api.TileItem> groundItems = tile.getGroundItems();
+						if (groundItems == null) continue;
+
+						for (net.runelite.api.TileItem gi : groundItems) {
+							ItemComposition comp = client.getItemDefinition(gi.getId());
+							if (comp.getName() != null && comp.getName().toLowerCase().contains(itemName.toLowerCase())) {
+								net.runelite.api.coords.LocalPoint lp = net.runelite.api.coords.LocalPoint.fromScene(sceneX, sceneY);
+								if (lp == null) continue;
+								Point sp = net.runelite.api.Perspective.localToCanvas(client, lp, plane);
+								if (sp == null) continue;
+								return new java.awt.Point(sp.getX(), sp.getY());
+							}
+						}
+					}
+				}
+			}
+			return null;
+		});
+
+		if (itemPoint == null) {
+			log.warn("Ground item '{}' not found nearby for right-click", itemName);
+			return false;
+		}
+
+		int jitterX = (int) ((Math.random() - 0.5) * 8);
+		int jitterY = (int) ((Math.random() - 0.5) * 8);
+
+		return rightClickAndSelect(
+			itemPoint.x + jitterX, itemPoint.y + jitterY,
+			action, itemName, profile
+		);
+	}
+
+	// ===== LOGOUT / WORLD HOP =====
+
+	/**
+	 * Get the current game state (LOGGED_IN, LOGIN_SCREEN, etc).
+	 */
+	public String getLoginState() {
+		return runOnClientThread(() -> client.getGameState().name());
+	}
+
+	/**
+	 * Get the current world number.
+	 */
+	public int getCurrentWorld() {
+		return runOnClientThread(() -> client.getWorld());
+	}
+
+	/**
+	 * Logout by clicking the logout button.
+	 * Opens the logout tab first if needed.
+	 */
+	public boolean logout(MouseMovementProfile profile) {
+		// First open the logout tab
+		if (!openPlayerTab(PlayerTab.LOGOUT, profile)) {
+			log.warn("Could not open logout tab");
+			return false;
+		}
+		sleep(300 + (int) (Math.random() * 200));
+
+		// Click the logout button
+		java.awt.Point clickTarget = runOnClientThread(() -> {
+			// Try the logout button widget
+			Widget logoutBtn = client.getWidget(InterfaceID.Logout.LOGOUT);
+			if (logoutBtn != null && !logoutBtn.isHidden()) {
+				return getWidgetClickPoint(logoutBtn, profile);
+			}
+			log.warn("Logout button widget not found");
+			return null;
+		});
+
+		if (clickTarget == null) return false;
+		mouseMovement.moveAndClick(clickTarget, profile);
+		log.info("Clicked logout button");
+		return true;
+	}
+
+	/**
+	 * Hop to a specific world.
+	 */
+	public boolean hopWorld(int worldNumber, MouseMovementProfile profile) {
+		Boolean result = runOnClientThread(() -> {
+			net.runelite.api.World[] worlds = client.getWorldList();
+			if (worlds == null) {
+				log.warn("World list not available");
+				return false;
+			}
+
+			for (net.runelite.api.World world : worlds) {
+				if (world.getId() == worldNumber) {
+					client.hopToWorld(world);
+					log.info("Hopping to world {}", worldNumber);
+					return true;
+				}
+			}
+
+			log.warn("World {} not found in world list", worldNumber);
+			return false;
+		});
+		return Boolean.TRUE.equals(result);
+	}
+
+	/**
+	 * Get available worlds info.
+	 */
+	public java.util.List<java.util.Map<String, Object>> getWorldList() {
+		return runOnClientThread(() -> {
+			java.util.List<java.util.Map<String, Object>> worldList = new java.util.ArrayList<>();
+			net.runelite.api.World[] worlds = client.getWorldList();
+			if (worlds == null) return worldList;
+
+			for (net.runelite.api.World world : worlds) {
+				java.util.Map<String, Object> info = new java.util.LinkedHashMap<>();
+				info.put("id", world.getId());
+				info.put("playerCount", world.getPlayerCount());
+				info.put("location", world.getLocation());
+				info.put("activity", world.getActivity());
+				info.put("types", world.getTypes().toString());
+				worldList.add(info);
+			}
+			return worldList;
+		});
 	}
 
 	private Point getMinimapPoint(WorldPoint worldPoint) {

@@ -673,6 +673,88 @@ public class TaskSequencer {
 	/**
 	 * Add a custom action step.
 	 */
+	// ===== Camera Control Steps =====
+
+	public TaskSequencer setCameraYaw(int yaw) {
+		steps.add(new TaskStep("setCameraYaw(" + yaw + ")", () -> {
+			interaction.setCameraYaw(yaw);
+			return true;
+		}));
+		return this;
+	}
+
+	public TaskSequencer setCameraPitch(int pitch) {
+		steps.add(new TaskStep("setCameraPitch(" + pitch + ")", () -> {
+			interaction.setCameraPitch(pitch);
+			return true;
+		}));
+		return this;
+	}
+
+	public TaskSequencer setCameraDirection(String direction) {
+		steps.add(new TaskStep("setCameraDirection(" + direction + ")", () -> {
+			interaction.setCameraDirection(direction);
+			return true;
+		}));
+		return this;
+	}
+
+	public TaskSequencer lookAtTile(int x, int y, int plane) {
+		steps.add(new TaskStep("lookAtTile(" + x + "," + y + "," + plane + ")", () -> {
+			interaction.lookAtTile(new net.runelite.api.coords.WorldPoint(x, y, plane));
+			return true;
+		}));
+		return this;
+	}
+
+	public TaskSequencer setCameraZoom(int zoom) {
+		return setCameraZoom(zoom, 1.0);
+	}
+
+	public TaskSequencer setCameraZoom(int zoom, double speed) {
+		steps.add(new TaskStep("setCameraZoom(" + zoom + ", speed=" + speed + ")", () -> {
+			interaction.setCameraZoom(zoom, speed);
+			return true;
+		}));
+		return this;
+	}
+
+	// ===== Run Control Steps =====
+
+	public TaskSequencer toggleRun() {
+		steps.add(new TaskStep("toggleRun()", () -> interaction.toggleRun(defaultProfile)));
+		return this;
+	}
+
+	// ===== Ground Item Steps =====
+
+	public TaskSequencer clickGroundItem(String itemName) {
+		steps.add(new TaskStep("clickGroundItem(" + itemName + ")",
+			() -> interaction.clickGroundItem(itemName, defaultProfile)));
+		return this;
+	}
+
+	public TaskSequencer takeGroundItem(String itemName) {
+		steps.add(new TaskStep("takeGroundItem(" + itemName + ")",
+			() -> interaction.rightClickGroundItemAndSelect(itemName, "Take", defaultProfile)));
+		return this;
+	}
+
+	// ===== Logout / World Hop Steps =====
+
+	public TaskSequencer logout() {
+		steps.add(new TaskStep("logout()", () -> interaction.logout(defaultProfile)));
+		return this;
+	}
+
+	public TaskSequencer hopWorld(int world) {
+		steps.add(new TaskStep("hopWorld(" + world + ")",
+			() -> interaction.hopWorld(world, defaultProfile)));
+		return this;
+	}
+
+	// ===== Custom Steps =====
+
 	public TaskSequencer custom(String description, BooleanSupplier action) {
 		steps.add(new TaskStep(description, () -> action.getAsBoolean()));
 		return this;

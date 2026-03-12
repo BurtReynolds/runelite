@@ -3,10 +3,14 @@ package net.runelite.client.plugins.interaction;
 /**
  * Defines parameters for human-like mouse movement behavior.
  * Fully customizable for anti-ban pattern experimentation.
+ *
+ * baseDelayMs represents the minimum movement duration in milliseconds.
+ * The actual duration scales with distance: totalMs = baseDelayMs + distance * 1.2
+ * Typical human mouse movements take 200-600ms.
  */
 public class MouseMovementProfile {
     public final double randomness;     // 0.0 - 1.0 (control point offset magnitude)
-    public final int baseDelayMs;       // Base delay between movement points (ms)
+    public final int baseDelayMs;       // Minimum movement duration (ms)
     public final double variance;       // Timing variance factor (0.0 - 1.0)
     public final boolean overshoot;     // Whether to overshoot target and correct
     public final double fatigueChance;  // Chance of slight miss/drift (0.0 - 1.0)
@@ -17,7 +21,7 @@ public class MouseMovementProfile {
      * Create a fully customized mouse movement profile.
      *
      * @param randomness Control point offset magnitude (0.0 = straight line, 1.0 = very curved)
-     * @param baseDelayMs Base delay between movement points in milliseconds
+     * @param baseDelayMs Minimum movement duration in milliseconds (total time scales with distance)
      * @param variance Timing variance factor (0.0 = consistent, 1.0 = highly variable)
      * @param overshoot Whether to occasionally overshoot target and correct back
      * @param fatigueChance Probability of slight inaccuracy (0.0 = perfect, 1.0 = always imperfect)
@@ -49,18 +53,18 @@ public class MouseMovementProfile {
         return Math.max(min, Math.min(max, value));
     }
 
-    // Preset profiles for different use cases
+    // Preset profiles — baseDelayMs is the minimum duration, actual time = baseDelayMs + distance * 1.2
     public static final MouseMovementProfile FAST =
-        new MouseMovementProfile(0.1, 1, 0.1, false, 0.05, 3, 0.3);
+        new MouseMovementProfile(0.15, 80, 0.15, false, 0.05, 3, 0.3);
 
     public static final MouseMovementProfile NORMAL =
-        new MouseMovementProfile(0.3, 2, 0.2, true, 0.1, 5, 0.5);
+        new MouseMovementProfile(0.25, 120, 0.25, true, 0.1, 5, 0.5);
 
     public static final MouseMovementProfile CAREFUL =
-        new MouseMovementProfile(0.2, 3, 0.15, false, 0.02, 2, 0.4);
+        new MouseMovementProfile(0.18, 180, 0.15, false, 0.02, 2, 0.4);
 
     public static final MouseMovementProfile TIRED =
-        new MouseMovementProfile(0.4, 4, 0.3, true, 0.25, 8, 0.6);
+        new MouseMovementProfile(0.35, 250, 0.4, true, 0.25, 8, 0.6);
 
     /**
      * Create a custom profile builder for easy customization.
@@ -71,9 +75,9 @@ public class MouseMovementProfile {
     }
 
     public static class Builder {
-        private double randomness = 0.3;
-        private int baseDelayMs = 2;
-        private double variance = 0.2;
+        private double randomness = 0.25;
+        private int baseDelayMs = 120;
+        private double variance = 0.25;
         private boolean overshoot = true;
         private double fatigueChance = 0.1;
         private int jitterRadius = 5;

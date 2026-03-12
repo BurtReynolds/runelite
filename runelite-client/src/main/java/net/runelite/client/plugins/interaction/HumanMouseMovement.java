@@ -7,6 +7,7 @@ import java.awt.*;
 import java.awt.event.MouseEvent;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * Implements human-like mouse movement using Bezier curves.
@@ -21,11 +22,37 @@ public class HumanMouseMovement {
 	private int virtualX;
 	private int virtualY;
 
+	// Trail history for overlay rendering (thread-safe)
+	private static final int TRAIL_MAX_SIZE = 50;
+	private final CopyOnWriteArrayList<TrailPoint> trailHistory = new CopyOnWriteArrayList<>();
+
 	public HumanMouseMovement(Client client) {
 		this.client = client;
 		// Initialize virtual position to center of canvas
 		this.virtualX = client.getCanvasWidth() / 2;
 		this.virtualY = client.getCanvasHeight() / 2;
+	}
+
+	/**
+	 * A point in the trail with a timestamp for age-based fading.
+	 */
+	public static class TrailPoint {
+		public final int x;
+		public final int y;
+		public final long timestamp;
+
+		public TrailPoint(int x, int y, long timestamp) {
+			this.x = x;
+			this.y = y;
+			this.timestamp = timestamp;
+		}
+	}
+
+	/**
+	 * Get a snapshot of the trail history for rendering.
+	 */
+	public List<TrailPoint> getTrailHistory() {
+		return new ArrayList<>(trailHistory);
 	}
 
 	/**
@@ -40,15 +67,25 @@ public class HumanMouseMovement {
 		}
 
 		Point start = new Point(virtualX, virtualY);
+		double distance = start.distance(target);
+
+		// For very short distances, just jump there
+		if (distance < 3) {
+			virtualX = target.x;
+			virtualY = target.y;
+			dispatchMoveEvent(canvas, target.x, target.y);
+			addTrailPoint(target.x, target.y);
+			return;
+		}
 
 		// Generate control points for cubic Bezier curve
-		Point cp1 = generateControlPoint(start, target, 0.3, profile);
-		Point cp2 = generateControlPoint(start, target, 0.7, profile);
+		Point cp1 = generateControlPoint(start, target, 0.25, profile);
+		Point cp2 = generateControlPoint(start, target, 0.75, profile);
 
 		// Optionally add overshoot
 		Point effectiveTarget = target;
-		if (profile.overshoot && Math.random() < 0.3) {
-			double overshootDistance = start.distance(target) * 0.05 * (0.5 + Math.random());
+		if (profile.overshoot && Math.random() < 0.25) {
+			double overshootDistance = distance * 0.04 * (0.5 + Math.random() * 0.5);
 			double angle = Math.atan2(target.y - start.y, target.x - start.x);
 			effectiveTarget = new Point(
 				target.x + (int) (Math.cos(angle) * overshootDistance),
@@ -57,18 +94,19 @@ public class HumanMouseMovement {
 		}
 
 		// Calculate curve points
-		List<Point> path = calculateBezierPath(start, cp1, cp2, effectiveTarget);
+		List<Point> path = calculateBezierPath(start, cp1, cp2, effectiveTarget, distance);
 
 		// If we overshot, add correction path back to the real target
 		if (effectiveTarget != target) {
+			double corrDist = effectiveTarget.distance(target);
 			Point correctionCp1 = generateControlPoint(effectiveTarget, target, 0.4, MouseMovementProfile.CAREFUL);
 			Point correctionCp2 = generateControlPoint(effectiveTarget, target, 0.6, MouseMovementProfile.CAREFUL);
-			List<Point> correction = calculateBezierPath(effectiveTarget, correctionCp1, correctionCp2, target);
+			List<Point> correction = calculateBezierPath(effectiveTarget, correctionCp1, correctionCp2, target, corrDist);
 			path.addAll(correction);
 		}
 
 		// Execute movement by dispatching mouse events along path
-		executePath(canvas, path, profile);
+		executePath(canvas, path, profile, distance);
 	}
 
 	/**
@@ -150,6 +188,14 @@ public class HumanMouseMovement {
 
 	// ===== Internal helpers =====
 
+	private void addTrailPoint(int x, int y) {
+		trailHistory.add(new TrailPoint(x, y, System.currentTimeMillis()));
+		// Trim old points
+		while (trailHistory.size() > TRAIL_MAX_SIZE) {
+			trailHistory.remove(0);
+		}
+	}
+
 	private void dispatchMouseEvent(Canvas canvas, int id, long when,
 									int button, int modifiers) {
 		try {
@@ -193,20 +239,28 @@ public class HumanMouseMovement {
 										MouseMovementProfile profile) {
 		double distance = start.distance(end);
 
-		// Random offset based on distance and randomness setting
-		double offsetMagnitude = distance * profile.randomness * (0.2 + Math.random() * 0.3);
-		double angle = Math.random() * 2 * Math.PI;
+		// Offset perpendicular to the line between start and end for natural curves
+		double lineAngle = Math.atan2(end.y - start.y, end.x - start.x);
+		// Perpendicular offset with slight randomness in direction
+		double perpAngle = lineAngle + Math.PI / 2 * (Math.random() < 0.5 ? 1 : -1);
+		// Add a small random deviation to the perpendicular angle (up to +/- 30 degrees)
+		perpAngle += (Math.random() - 0.5) * Math.PI / 3;
 
-		// Linear interpolation with random offset
-		double x = start.x + (end.x - start.x) * t + Math.cos(angle) * offsetMagnitude;
-		double y = start.y + (end.y - start.y) * t + Math.sin(angle) * offsetMagnitude;
+		double offsetMagnitude = distance * profile.randomness * (0.15 + Math.random() * 0.25);
+
+		// Linear interpolation with perpendicular offset
+		double x = start.x + (end.x - start.x) * t + Math.cos(perpAngle) * offsetMagnitude;
+		double y = start.y + (end.y - start.y) * t + Math.sin(perpAngle) * offsetMagnitude;
 
 		return new Point((int) x, (int) y);
 	}
 
-	private List<Point> calculateBezierPath(Point p0, Point p1, Point p2, Point p3) {
+	private List<Point> calculateBezierPath(Point p0, Point p1, Point p2, Point p3, double distance) {
 		List<Point> points = new ArrayList<>();
-		int steps = Math.max(10, (int) (p0.distance(p3) / 2)); // ~2 pixels per step
+		// Ensure enough steps for smooth movement: at least 60 steps, ~1.5px per step for longer moves
+		int steps = Math.max(60, (int) (distance / 1.5));
+		// Cap at reasonable maximum
+		steps = Math.min(steps, 500);
 
 		for (int i = 0; i <= steps; i++) {
 			double t = (double) i / steps;
@@ -215,7 +269,15 @@ public class HumanMouseMovement {
 			points.add(new Point((int) x, (int) y));
 		}
 
-		return points;
+		// Remove duplicate consecutive points
+		List<Point> deduped = new ArrayList<>();
+		for (int i = 0; i < points.size(); i++) {
+			if (i == 0 || points.get(i).x != points.get(i - 1).x || points.get(i).y != points.get(i - 1).y) {
+				deduped.add(points.get(i));
+			}
+		}
+
+		return deduped;
 	}
 
 	private double cubicBezier(double p0, double p1, double p2, double p3, double t) {
@@ -223,8 +285,42 @@ public class HumanMouseMovement {
 		return u * u * u * p0 + 3 * u * u * t * p1 + 3 * u * t * t * p2 + t * t * t * p3;
 	}
 
-	private void executePath(Canvas canvas, List<Point> path, MouseMovementProfile profile) {
-		for (int i = 0; i < path.size(); i++) {
+	private void executePath(Canvas canvas, List<Point> path, MouseMovementProfile profile, double totalDistance) {
+		if (path.isEmpty()) {
+			return;
+		}
+
+		// Calculate total movement duration using Fitts' Law inspired model
+		// Human mouse movements typically take 150-500ms depending on distance
+		double baseDuration = profile.baseDelayMs + totalDistance * 0.8;
+		// Add slight randomness to total duration (+/- 15%)
+		double durationVariance = 1.0 + (Math.random() - 0.5) * 0.3 * profile.variance;
+		double totalDurationMs = baseDuration * durationVariance;
+		// Clamp to reasonable range
+		totalDurationMs = Math.max(100, Math.min(totalDurationMs, 1200));
+
+		int numSteps = path.size();
+
+		// Pre-compute per-step delays using velocity easing
+		// Human movement: accelerate quickly, fast in middle, decelerate at end
+		// We use the inverse approach: compute velocity multiplier per step,
+		// then normalize so total time matches totalDurationMs
+		double[] rawDelays = new double[numSteps];
+		double rawTotal = 0;
+		for (int i = 0; i < numSteps; i++) {
+			double t = (double) i / Math.max(1, numSteps - 1);
+			// Velocity profile: bell curve peaking in the middle
+			// At t=0 and t=1, velocity is low (slow), at t=0.5 velocity is high (fast)
+			// delay = 1/velocity, so high velocity = low delay
+			double velocity = velocityProfile(t);
+			rawDelays[i] = 1.0 / Math.max(0.15, velocity);
+			rawTotal += rawDelays[i];
+		}
+
+		// Normalize delays so they sum to totalDurationMs
+		double scale = totalDurationMs / rawTotal;
+
+		for (int i = 0; i < numSteps; i++) {
 			Point p = path.get(i);
 
 			// Clamp to canvas bounds
@@ -235,40 +331,61 @@ public class HumanMouseMovement {
 			virtualX = clampedX;
 			virtualY = clampedY;
 			dispatchMoveEvent(canvas, clampedX, clampedY);
+			addTrailPoint(clampedX, clampedY);
 
-			// Calculate delay with easing
-			double progress = (double) i / path.size();
-			int delay = calculateDelay(progress, profile);
+			if (i < numSteps - 1) {
+				double delayMs = rawDelays[i] * scale;
 
-			// Occasional fatigue pause
-			if (profile.fatigueChance > 0 && Math.random() < profile.fatigueChance * 0.1) {
-				delay += (int) (Math.random() * 20);
-			}
+				// Occasional micro-pause for human realism (not at start/end)
+				if (i > numSteps * 0.2 && i < numSteps * 0.8
+					&& profile.fatigueChance > 0 && Math.random() < profile.fatigueChance * 0.02) {
+					delayMs += 10 + Math.random() * 25;
+				}
 
-			try {
-				Thread.sleep(delay);
-			} catch (InterruptedException e) {
-				Thread.currentThread().interrupt();
-				break;
+				int sleepMs = (int) Math.round(delayMs);
+				if (sleepMs >= 2) {
+					try {
+						Thread.sleep(sleepMs);
+					} catch (InterruptedException e) {
+						Thread.currentThread().interrupt();
+						break;
+					}
+				} else if (delayMs > 0.1) {
+					// Sub-millisecond: busy-wait for precision
+					long targetNanos = System.nanoTime() + (long) (delayMs * 1_000_000);
+					while (System.nanoTime() < targetNanos) {
+						Thread.yield();
+					}
+				}
 			}
 		}
 	}
 
-	private int calculateDelay(double progress, MouseMovementProfile profile) {
-		// Ease-in-out cubic timing function
-		double speed = easeInOutCubic(progress);
-
-		// Base delay with randomness
-		int baseDelay = profile.baseDelayMs;
-		int variance = (int) (baseDelay * profile.variance * (Math.random() - 0.5) * 2);
-
-		return Math.max(1, (int) (baseDelay / Math.max(0.5, speed)) + variance);
-	}
-
-	private double easeInOutCubic(double t) {
-		return t < 0.5
-			? 4 * t * t * t
-			: 1 - Math.pow(-2 * t + 2, 3) / 2;
+	/**
+	 * Human-like velocity profile for mouse movement.
+	 * Returns a value 0-1 representing relative speed at position t along the path.
+	 * Shape: slow start, quick ramp to fast, sustained fast through middle, slow approach at end.
+	 * This mimics real human mouse behavior where the hand accelerates quickly,
+	 * maintains speed, then decelerates to precisely land on the target.
+	 */
+	private double velocityProfile(double t) {
+		// Asymmetric bell: faster ramp-up, longer sustain, gradual slowdown
+		// Using a piecewise function:
+		//   0.0-0.15: quick acceleration (cubic ease-in)
+		//   0.15-0.75: fast sustained movement
+		//   0.75-1.0: deceleration to target (quadratic ease-out)
+		if (t < 0.15) {
+			// Quick acceleration phase
+			double phase = t / 0.15;
+			return 0.1 + 0.9 * phase * phase;
+		} else if (t < 0.75) {
+			// Sustained fast movement with slight natural variation
+			return 1.0;
+		} else {
+			// Deceleration phase — slows down as we approach target
+			double phase = (t - 0.75) / 0.25;
+			return 1.0 - 0.85 * phase * phase;
+		}
 	}
 
 	private void sleep(int ms) {

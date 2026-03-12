@@ -236,6 +236,31 @@ public class ApiServerPlugin extends Plugin {
         app.get("/api/v1/interaction/task/status", this::handleTaskStatus);
         app.post("/api/v1/interaction/task/cancel", this::handleTaskCancel);
 
+        // Camera control endpoints
+        app.get("/api/v1/camera", this::handleGetCamera);
+        app.post("/api/v1/camera/yaw", this::handleSetCameraYaw);
+        app.post("/api/v1/camera/pitch", this::handleSetCameraPitch);
+        app.post("/api/v1/camera/direction", this::handleSetCameraDirection);
+        app.post("/api/v1/camera/look-at", this::handleCameraLookAt);
+        app.get("/api/v1/camera/zoom", this::handleGetCameraZoom);
+        app.post("/api/v1/camera/zoom", this::handleSetCameraZoom);
+
+        // Run energy endpoints
+        app.get("/api/v1/player/run", this::handleGetRunState);
+        app.post("/api/v1/player/run/toggle", this::handleToggleRun);
+
+        // Ground items endpoints
+        app.get("/api/v1/ground-items/nearby", this::handleGetGroundItemsNearby);
+        app.post("/api/v1/interaction/ground-item/click", this::handleClickGroundItem);
+        app.post("/api/v1/interaction/ground-item/take", this::handleTakeGroundItem);
+
+        // Logout / World hop endpoints
+        app.get("/api/v1/world/current", this::handleGetCurrentWorld);
+        app.get("/api/v1/world/list", this::handleGetWorldList);
+        app.get("/api/v1/player/login-state", this::handleGetLoginState);
+        app.post("/api/v1/interaction/logout", this::handleLogout);
+        app.post("/api/v1/interaction/hop-world", this::handleHopWorld);
+
         // Chat endpoints
         app.get("/api/v1/chat/recent", this::handleGetRecentChat);
 
@@ -338,6 +363,31 @@ public class ApiServerPlugin extends Plugin {
         endpoints.put("bankSearch", "POST /api/v1/bank/search {query}");
         endpoints.put("bankWithdraw", "POST /api/v1/bank/withdraw {itemName, quantity?, option?}");
         endpoints.put("bankDeposit", "POST /api/v1/bank/deposit {itemName, quantity?, option?}");
+
+        // Camera endpoints
+        endpoints.put("camera", "GET /api/v1/camera");
+        endpoints.put("cameraYaw", "POST /api/v1/camera/yaw {yaw}");
+        endpoints.put("cameraPitch", "POST /api/v1/camera/pitch {pitch}");
+        endpoints.put("cameraDirection", "POST /api/v1/camera/direction {direction}");
+        endpoints.put("cameraLookAt", "POST /api/v1/camera/look-at {x, y, plane?}");
+        endpoints.put("cameraZoomGet", "GET /api/v1/camera/zoom");
+        endpoints.put("cameraZoomSet", "POST /api/v1/camera/zoom {zoom, speed?}");
+
+        // Run energy endpoints
+        endpoints.put("runState", "GET /api/v1/player/run");
+        endpoints.put("toggleRun", "POST /api/v1/player/run/toggle");
+
+        // Ground items endpoints
+        endpoints.put("groundItemsNearby", "GET /api/v1/ground-items/nearby?radius=10");
+        endpoints.put("clickGroundItem", "POST /api/v1/interaction/ground-item/click {itemName, profile?}");
+        endpoints.put("takeGroundItem", "POST /api/v1/interaction/ground-item/take {itemName, profile?}");
+
+        // Logout / World hop endpoints
+        endpoints.put("currentWorld", "GET /api/v1/world/current");
+        endpoints.put("worldList", "GET /api/v1/world/list");
+        endpoints.put("loginState", "GET /api/v1/player/login-state");
+        endpoints.put("logout", "POST /api/v1/interaction/logout");
+        endpoints.put("hopWorld", "POST /api/v1/interaction/hop-world {world}");
 
         // Chat endpoints
         endpoints.put("chatRecent", "GET /api/v1/chat/recent?limit=50&type=GAMEMESSAGE");
@@ -1524,6 +1574,41 @@ public class ApiServerPlugin extends Plugin {
                     getIntParam(params, "pollMs", 200)
                 );
                 return true;
+            case "set_camera_yaw":
+                seq.setCameraYaw(((Number) params.get("yaw")).intValue());
+                return true;
+            case "set_camera_pitch":
+                seq.setCameraPitch(((Number) params.get("pitch")).intValue());
+                return true;
+            case "set_camera_direction":
+                seq.setCameraDirection((String) params.get("direction"));
+                return true;
+            case "look_at_tile":
+                seq.lookAtTile(
+                    ((Number) params.get("x")).intValue(),
+                    ((Number) params.get("y")).intValue(),
+                    params.containsKey("plane") ? ((Number) params.get("plane")).intValue() : 0
+                );
+                return true;
+            case "set_camera_zoom":
+                double zoomSpeed = params.containsKey("speed") ? ((Number) params.get("speed")).doubleValue() : 1.0;
+                seq.setCameraZoom(((Number) params.get("zoom")).intValue(), zoomSpeed);
+                return true;
+            case "toggle_run":
+                seq.toggleRun();
+                return true;
+            case "click_ground_item":
+                seq.clickGroundItem((String) params.get("itemName"));
+                return true;
+            case "take_ground_item":
+                seq.takeGroundItem((String) params.get("itemName"));
+                return true;
+            case "logout":
+                seq.logout();
+                return true;
+            case "hop_world":
+                seq.hopWorld(((Number) params.get("world")).intValue());
+                return true;
             default:
                 return false;
         }
@@ -2057,6 +2142,202 @@ public class ApiServerPlugin extends Plugin {
         });
 
         log.info("WebSocket route registered: /ws/events");
+    }
+
+    // ===== CAMERA HANDLERS =====
+
+    private void handleGetCamera(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        ctx.json(interactionPlugin.getCameraState());
+    }
+
+    private void handleSetCameraYaw(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            @SuppressWarnings("unchecked") Map<String, Object> body = ctx.bodyAsClass(Map.class);
+            int yaw = ((Number) body.get("yaw")).intValue();
+            interactionPlugin.setCameraYaw(yaw);
+            ctx.json(Map.of("success", true, "yaw", yaw));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    private void handleSetCameraPitch(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            @SuppressWarnings("unchecked") Map<String, Object> body = ctx.bodyAsClass(Map.class);
+            int pitch = ((Number) body.get("pitch")).intValue();
+            interactionPlugin.setCameraPitch(pitch);
+            ctx.json(Map.of("success", true, "pitch", pitch));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    private void handleSetCameraDirection(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            @SuppressWarnings("unchecked") Map<String, Object> body = ctx.bodyAsClass(Map.class);
+            String direction = (String) body.get("direction");
+            if (direction == null || direction.isEmpty()) {
+                ctx.status(400).json(createError("'direction' is required (north/south/east/west or degrees 0-359)"));
+                return;
+            }
+            interactionPlugin.setCameraDirection(direction);
+            ctx.json(Map.of("success", true, "direction", direction));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    private void handleCameraLookAt(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            @SuppressWarnings("unchecked") Map<String, Object> body = ctx.bodyAsClass(Map.class);
+            int x = ((Number) body.get("x")).intValue();
+            int y = ((Number) body.get("y")).intValue();
+            int plane = body.containsKey("plane") ? ((Number) body.get("plane")).intValue() : 0;
+            WorldPoint target = new WorldPoint(x, y, plane);
+            interactionPlugin.lookAtTile(target);
+            ctx.json(Map.of("success", true, "target", Map.of("x", x, "y", y, "plane", plane)));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    private void handleGetCameraZoom(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        ctx.json(Map.of("zoom", interactionPlugin.getCameraZoom()));
+    }
+
+    private void handleSetCameraZoom(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            @SuppressWarnings("unchecked") Map<String, Object> body = ctx.bodyAsClass(Map.class);
+            int zoom = ((Number) body.get("zoom")).intValue();
+            double speed = body.containsKey("speed") ? ((Number) body.get("speed")).doubleValue() : 1.0;
+            interactionPlugin.setCameraZoom(zoom, speed);
+            ctx.json(Map.of("success", true, "zoom", zoom, "speed", speed));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    // ===== RUN ENERGY HANDLERS =====
+
+    private void handleGetRunState(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        ctx.json(interactionPlugin.getRunState());
+    }
+
+    private void handleToggleRun(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            String profileName = "NORMAL";
+            try {
+                @SuppressWarnings("unchecked") Map<String, Object> body = ctx.bodyAsClass(Map.class);
+                if (body.containsKey("profile")) profileName = (String) body.get("profile");
+            } catch (Exception ignored) {}
+
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+            boolean success = interactionPlugin.toggleRun(profile);
+            ctx.json(Map.of("success", success));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    // ===== GROUND ITEMS HANDLERS =====
+
+    private void handleGetGroundItemsNearby(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        int radius = ctx.queryParamAsClass("radius", Integer.class).getOrDefault(10);
+        ctx.json(interactionPlugin.getGroundItemsNearby(radius));
+    }
+
+    private void handleClickGroundItem(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            @SuppressWarnings("unchecked") Map<String, Object> body = ctx.bodyAsClass(Map.class);
+            String itemName = (String) body.get("itemName");
+            String profileName = (String) body.getOrDefault("profile", "NORMAL");
+            if (itemName == null || itemName.isEmpty()) {
+                ctx.status(400).json(createError("'itemName' is required"));
+                return;
+            }
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+            boolean success = interactionPlugin.clickGroundItem(itemName, profile);
+            ctx.json(Map.of("success", success, "itemName", itemName));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    private void handleTakeGroundItem(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            @SuppressWarnings("unchecked") Map<String, Object> body = ctx.bodyAsClass(Map.class);
+            String itemName = (String) body.get("itemName");
+            String profileName = (String) body.getOrDefault("profile", "NORMAL");
+            if (itemName == null || itemName.isEmpty()) {
+                ctx.status(400).json(createError("'itemName' is required"));
+                return;
+            }
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+            boolean success = interactionPlugin.rightClickGroundItemAndSelect(itemName, "Take", profile);
+            ctx.json(Map.of("success", success, "itemName", itemName, "action", "Take"));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    // ===== LOGOUT / WORLD HOP HANDLERS =====
+
+    private void handleGetLoginState(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        ctx.json(Map.of("state", interactionPlugin.getLoginState()));
+    }
+
+    private void handleGetCurrentWorld(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        ctx.json(Map.of("world", interactionPlugin.getCurrentWorld()));
+    }
+
+    private void handleGetWorldList(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        ctx.json(interactionPlugin.getWorldList());
+    }
+
+    private void handleLogout(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            String profileName = "NORMAL";
+            try {
+                @SuppressWarnings("unchecked") Map<String, Object> body = ctx.bodyAsClass(Map.class);
+                if (body.containsKey("profile")) profileName = (String) body.get("profile");
+            } catch (Exception ignored) {}
+
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+            boolean success = interactionPlugin.logout(profile);
+            ctx.json(Map.of("success", success));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    private void handleHopWorld(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            @SuppressWarnings("unchecked") Map<String, Object> body = ctx.bodyAsClass(Map.class);
+            int world = ((Number) body.get("world")).intValue();
+            MouseMovementProfile profile = MouseMovementProfile.fromString(
+                (String) body.getOrDefault("profile", "NORMAL"));
+            boolean success = interactionPlugin.hopWorld(world, profile);
+            ctx.json(Map.of("success", success, "world", world));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
     }
 
     private void broadcastEventToWebSockets(GameEvent event) {
