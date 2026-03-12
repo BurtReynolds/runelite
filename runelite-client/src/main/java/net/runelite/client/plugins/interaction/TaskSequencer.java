@@ -323,6 +323,125 @@ public class TaskSequencer {
 		return this;
 	}
 
+	// ===== Bank Steps =====
+
+	/**
+	 * Click a bank item by name (withdraw with default quantity).
+	 */
+	public TaskSequencer clickBankItem(String itemName) {
+		steps.add(new TaskStep("clickBankItem(" + itemName + ")",
+			() -> interaction.clickBankItem(itemName, defaultProfile)));
+		return this;
+	}
+
+	/**
+	 * Right-click a bank item and select an option (e.g., "Withdraw-1", "Withdraw-All").
+	 */
+	public TaskSequencer rightClickBankItemAndSelect(String itemName, String option) {
+		steps.add(new TaskStep("rightClickBankItemAndSelect(" + itemName + "," + option + ")",
+			() -> interaction.rightClickBankItemAndSelect(itemName, option, defaultProfile)));
+		return this;
+	}
+
+	/**
+	 * Click a bank inventory item by name (deposit with default quantity).
+	 */
+	public TaskSequencer clickBankInventoryItem(String itemName) {
+		steps.add(new TaskStep("clickBankInventoryItem(" + itemName + ")",
+			() -> interaction.clickBankInventoryItem(itemName, defaultProfile)));
+		return this;
+	}
+
+	/**
+	 * Right-click a bank inventory item and select an option (e.g., "Deposit-1", "Deposit-All").
+	 */
+	public TaskSequencer rightClickBankInventoryItemAndSelect(String itemName, String option) {
+		steps.add(new TaskStep("rightClickBankInventoryItemAndSelect(" + itemName + "," + option + ")",
+			() -> interaction.rightClickBankInventoryItemAndSelect(itemName, option, defaultProfile)));
+		return this;
+	}
+
+	/**
+	 * Click the deposit-inventory button.
+	 */
+	public TaskSequencer depositInventory() {
+		steps.add(new TaskStep("depositInventory()",
+			() -> interaction.depositInventory(defaultProfile)));
+		return this;
+	}
+
+	/**
+	 * Click the deposit-equipment button.
+	 */
+	public TaskSequencer depositEquipment() {
+		steps.add(new TaskStep("depositEquipment()",
+			() -> interaction.depositEquipment(defaultProfile)));
+		return this;
+	}
+
+	/**
+	 * Click a bank tab (0 = all, 1-9 = tabs 1-9).
+	 */
+	public TaskSequencer clickBankTab(int tab) {
+		steps.add(new TaskStep("clickBankTab(" + tab + ")",
+			() -> interaction.clickBankTab(tab, defaultProfile)));
+		return this;
+	}
+
+	/**
+	 * Set the bank withdraw quantity mode (1, 5, 10, -1=X, 0=All).
+	 */
+	public TaskSequencer setBankQuantity(int quantity) {
+		steps.add(new TaskStep("setBankQuantity(" + quantity + ")",
+			() -> interaction.setBankQuantity(quantity, defaultProfile)));
+		return this;
+	}
+
+	/**
+	 * Toggle note/item withdrawal mode.
+	 */
+	public TaskSequencer toggleBankNoteMode() {
+		steps.add(new TaskStep("toggleBankNoteMode()",
+			() -> interaction.toggleBankNoteMode(defaultProfile)));
+		return this;
+	}
+
+	/**
+	 * Search for items in the bank.
+	 */
+	public TaskSequencer bankSearch(String query) {
+		steps.add(new TaskStep("bankSearch(" + query + ")",
+			() -> interaction.bankSearch(query, defaultProfile)));
+		return this;
+	}
+
+	/**
+	 * Withdraw X quantity of an item (right-click Withdraw-X, type amount, press enter).
+	 */
+	public TaskSequencer withdrawX(String itemName, int amount) {
+		steps.add(new TaskStep("withdrawX(" + itemName + "," + amount + ")",
+			() -> interaction.withdrawX(itemName, amount, defaultProfile)));
+		return this;
+	}
+
+	/**
+	 * Deposit X quantity of an item (right-click Deposit-X, type amount, press enter).
+	 */
+	public TaskSequencer depositX(String itemName, int amount) {
+		steps.add(new TaskStep("depositX(" + itemName + "," + amount + ")",
+			() -> interaction.depositX(itemName, amount, defaultProfile)));
+		return this;
+	}
+
+	/**
+	 * Close the bank interface.
+	 */
+	public TaskSequencer closeBank() {
+		steps.add(new TaskStep("closeBank()",
+			() -> interaction.closeBank(defaultProfile)));
+		return this;
+	}
+
 	// ===== Walking Steps =====
 
 	/**

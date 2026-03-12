@@ -9,8 +9,13 @@ import net.runelite.api.ItemContainer;
 import net.runelite.api.Menu;
 import net.runelite.api.MenuEntry;
 import net.runelite.api.Point;
+import net.runelite.api.ScriptID;
+import net.runelite.api.VarClientStr;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.gameval.InterfaceID;
+import net.runelite.api.gameval.InventoryID;
+import net.runelite.api.gameval.VarClientID;
+import net.runelite.api.vars.InputType;
 import net.runelite.api.widgets.Widget;
 import net.runelite.api.widgets.WidgetInfo;
 import net.runelite.client.callback.ClientThread;
@@ -20,6 +25,7 @@ import net.runelite.client.plugins.PluginManager;
 import net.runelite.client.plugins.gamestate.GameStatePlugin;
 import net.runelite.client.plugins.objectdetection.GameObjectInfo;
 import net.runelite.client.plugins.objectdetection.ObjectDetectionPlugin;
+import net.runelite.client.ui.overlay.OverlayManager;
 
 import javax.inject.Inject;
 import java.awt.Rectangle;
@@ -50,10 +56,14 @@ public class InteractionPlugin extends Plugin {
 	@Inject
 	private ClientThread clientThread;
 
+	@Inject
+	private OverlayManager overlayManager;
+
 	private HumanMouseMovement mouseMovement;
 	private ObjectDetectionPlugin objectDetectionPlugin;
 	private GameStatePlugin gameStatePlugin;
 	private WebWalker webWalker;
+	private VirtualMouseOverlay virtualMouseOverlay;
 
 	@Override
 	protected void startUp() throws Exception {
@@ -76,11 +86,35 @@ public class InteractionPlugin extends Plugin {
 		webWalker = new WebWalker(client, clientThread, this, mouseMovement);
 		webWalker.setObjectDetectionPlugin(objectDetectionPlugin);
 		log.info("WebWalker initialized");
+
+		// Initialize virtual mouse overlay
+		virtualMouseOverlay = new VirtualMouseOverlay(mouseMovement);
+		overlayManager.add(virtualMouseOverlay);
+		log.info("Virtual mouse cursor overlay enabled");
 	}
 
 	@Override
 	protected void shutDown() throws Exception {
+		if (virtualMouseOverlay != null) {
+			overlayManager.remove(virtualMouseOverlay);
+		}
 		log.info("Interaction Plugin stopped");
+	}
+
+	/**
+	 * Enable or disable the virtual mouse cursor overlay.
+	 */
+	public void setVirtualCursorEnabled(boolean enabled) {
+		if (virtualMouseOverlay != null) {
+			virtualMouseOverlay.setEnabled(enabled);
+		}
+	}
+
+	/**
+	 * Check if the virtual mouse cursor overlay is enabled.
+	 */
+	public boolean isVirtualCursorEnabled() {
+		return virtualMouseOverlay != null && virtualMouseOverlay.isEnabled();
 	}
 
 	/**
@@ -1832,6 +1866,625 @@ public class InteractionPlugin extends Plugin {
 
 		log.info("Clicked widget at ({}, {})", screenPoint.getX(), screenPoint.getY());
 		return true;
+	}
+
+	// ===== BANK INTERACTION =====
+
+	/**
+	 * Check if the bank interface is currently open.
+	 */
+	public boolean isBankOpen() {
+		return runOnClientThread(() -> {
+			Widget bankContainer = client.getWidget(InterfaceID.Bankmain.UNIVERSE);
+			return bankContainer != null && !bankContainer.isHidden();
+		});
+	}
+
+	/**
+	 * Close the bank interface by clicking the close button (top-right X).
+	 */
+	public boolean closeBank(MouseMovementProfile profile) {
+		return runOnClientThread(() -> {
+			Widget bankFrame = client.getWidget(InterfaceID.Bankmain.FRAME);
+			if (bankFrame == null || bankFrame.isHidden()) {
+				log.warn("Bank is not open");
+				return false;
+			}
+
+			// The close button is child 11 of the FRAME widget
+			Widget[] children = bankFrame.getDynamicChildren();
+			if (children != null && children.length > 11) {
+				Widget closeButton = children[11];
+				if (closeButton != null && !closeButton.isHidden()) {
+					return clickWidgetInternal(closeButton, profile);
+				}
+			}
+
+			// Fallback: try static children
+			Widget[] staticChildren = bankFrame.getStaticChildren();
+			if (staticChildren != null && staticChildren.length > 11) {
+				Widget closeButton = staticChildren[11];
+				if (closeButton != null && !closeButton.isHidden()) {
+					return clickWidgetInternal(closeButton, profile);
+				}
+			}
+
+			log.warn("Could not find bank close button");
+			return false;
+		});
+	}
+
+	/**
+	 * Get all items currently visible in the bank.
+	 * Returns a list of maps with id, name, quantity, and slot index.
+	 */
+	public java.util.List<java.util.Map<String, Object>> getBankItems() {
+		return runOnClientThread(() -> {
+			java.util.List<java.util.Map<String, Object>> items = new java.util.ArrayList<>();
+
+			ItemContainer bankContainer = client.getItemContainer(InventoryID.BANK);
+			if (bankContainer == null) {
+				log.warn("Bank container not available (is the bank open?)");
+				return items;
+			}
+
+			Item[] bankItems = bankContainer.getItems();
+			for (int i = 0; i < bankItems.length; i++) {
+				Item item = bankItems[i];
+				if (item.getId() == -1 || item.getId() == 6512) { // 6512 = placeholder
+					continue;
+				}
+
+				ItemComposition comp = client.getItemDefinition(item.getId());
+				java.util.Map<String, Object> entry = new java.util.LinkedHashMap<>();
+				entry.put("slot", i);
+				entry.put("id", item.getId());
+				entry.put("name", comp.getName());
+				entry.put("quantity", item.getQuantity());
+				items.add(entry);
+			}
+
+			return items;
+		});
+	}
+
+	/**
+	 * Find a bank item by name. Returns the widget for that item, or null.
+	 * Must be called on client thread.
+	 */
+	private Widget findBankItemWidget(String itemName) {
+		Widget bankItemContainer = client.getWidget(InterfaceID.Bankmain.ITEMS);
+		if (bankItemContainer == null || bankItemContainer.isHidden()) {
+			log.warn("Bank items widget not visible");
+			return null;
+		}
+
+		Widget[] children = bankItemContainer.getDynamicChildren();
+		if (children == null) {
+			return null;
+		}
+
+		String search = itemName.toLowerCase();
+
+		for (Widget child : children) {
+			if (child == null || child.isHidden()) continue;
+			int itemId = child.getItemId();
+			if (itemId == -1 || itemId == 6512) continue;
+
+			ItemComposition comp = client.getItemDefinition(itemId);
+			if (comp.getName().toLowerCase().contains(search)) {
+				log.info("Found bank item '{}' (actual: '{}') at index {}",
+					itemName, comp.getName(), child.getIndex());
+				return child;
+			}
+		}
+
+		log.warn("Bank item '{}' not found in visible items", itemName);
+		return null;
+	}
+
+	/**
+	 * Check if a bank item widget is within the visible scroll area.
+	 * Must be called on client thread.
+	 */
+	private boolean isBankItemVisible(Widget item) {
+		Widget container = client.getWidget(InterfaceID.Bankmain.ITEMS_CONTAINER);
+		if (container == null) return false;
+
+		Rectangle containerBounds = container.getBounds();
+		Rectangle itemBounds = item.getBounds();
+		if (containerBounds == null || itemBounds == null) return false;
+
+		// Item is visible if its vertical center is within the container bounds
+		int itemCenterY = (int)(itemBounds.getY() + itemBounds.getHeight() / 2);
+		return itemCenterY >= containerBounds.getY() && itemCenterY <= containerBounds.getY() + containerBounds.getHeight();
+	}
+
+	/**
+	 * Scroll a bank item into view by dispatching mouse wheel events on the bank container.
+	 * Returns true if the item is now visible.
+	 */
+	private boolean scrollBankItemIntoView(Widget item, MouseMovementProfile profile) {
+		Widget container = client.getWidget(InterfaceID.Bankmain.ITEMS_CONTAINER);
+		if (container == null) return false;
+
+		// Move mouse over the bank item container area first
+		Rectangle containerBounds = runOnClientThread(() -> {
+			Widget c = client.getWidget(InterfaceID.Bankmain.ITEMS_CONTAINER);
+			return c != null ? c.getBounds() : null;
+		});
+		if (containerBounds == null) return false;
+
+		int centerX = (int)(containerBounds.getX() + containerBounds.getWidth() / 2);
+		int centerY = (int)(containerBounds.getY() + containerBounds.getHeight() / 2);
+		mouseMovement.moveMouse(new java.awt.Point(centerX, centerY), profile);
+		sleep(100 + (int)(Math.random() * 100));
+
+		// Scroll in the direction we need to go
+		for (int attempt = 0; attempt < 40; attempt++) {
+			Boolean visible = runOnClientThread(() -> isBankItemVisible(item));
+			if (Boolean.TRUE.equals(visible)) {
+				sleep(100);
+				return true;
+			}
+
+			// Determine scroll direction: if item is below visible area, scroll down (+), else up (-)
+			int scrollDirection = runOnClientThread(() -> {
+				Widget c = client.getWidget(InterfaceID.Bankmain.ITEMS_CONTAINER);
+				if (c == null) return 0;
+				Rectangle cBounds = c.getBounds();
+				Rectangle iBounds = item.getBounds();
+				if (cBounds == null || iBounds == null) return 0;
+
+				int itemY = (int)(iBounds.getY() + iBounds.getHeight() / 2);
+				int containerTop = (int)cBounds.getY();
+				int containerBottom = (int)(cBounds.getY() + cBounds.getHeight());
+
+				if (itemY > containerBottom) return 1;   // Need to scroll down
+				if (itemY < containerTop) return -1;      // Need to scroll up
+				return 0;
+			});
+
+			if (scrollDirection == 0) return true;
+
+			// Dispatch mouse wheel event
+			java.awt.Canvas canvas = client.getCanvas();
+			if (canvas == null) return false;
+
+			int wheelRotation = scrollDirection * 3; // Scroll 3 notches at a time
+			canvas.dispatchEvent(new java.awt.event.MouseWheelEvent(
+				canvas,
+				java.awt.event.MouseWheelEvent.MOUSE_WHEEL,
+				System.currentTimeMillis(),
+				0,
+				centerX, centerY,
+				0, false,
+				java.awt.event.MouseWheelEvent.WHEEL_UNIT_SCROLL,
+				3, wheelRotation
+			));
+
+			sleep(80 + (int)(Math.random() * 60));
+		}
+
+		log.warn("Could not scroll bank item into view after 40 scroll attempts");
+		return false;
+	}
+
+	/**
+	 * Click a bank item by name (left-click = withdraw default quantity).
+	 * Scrolls the item into view if needed.
+	 */
+	public boolean clickBankItem(String itemName, MouseMovementProfile profile) {
+		// Find the item widget on client thread
+		Widget item = runOnClientThread(() -> findBankItemWidget(itemName));
+		if (item == null) return false;
+
+		// Check if visible, scroll if needed
+		Boolean visible = runOnClientThread(() -> isBankItemVisible(item));
+		if (!Boolean.TRUE.equals(visible)) {
+			log.info("Bank item '{}' not in visible area, scrolling...", itemName);
+			if (!scrollBankItemIntoView(item, profile)) {
+				return false;
+			}
+		}
+
+		// Now click it
+		return runOnClientThread(() -> clickWidgetInternal(item, profile));
+	}
+
+	/**
+	 * Right-click a bank item and select a specific option (e.g., "Withdraw-1", "Withdraw-5",
+	 * "Withdraw-10", "Withdraw-All", "Withdraw-X", "Examine").
+	 * Scrolls the item into view if needed.
+	 */
+	public boolean rightClickBankItemAndSelect(String itemName, String option, MouseMovementProfile profile) {
+		// Find the item widget on client thread
+		Widget item = runOnClientThread(() -> findBankItemWidget(itemName));
+		if (item == null) return false;
+
+		// Check if visible, scroll if needed
+		Boolean visible = runOnClientThread(() -> isBankItemVisible(item));
+		if (!Boolean.TRUE.equals(visible)) {
+			log.info("Bank item '{}' not in visible area, scrolling...", itemName);
+			if (!scrollBankItemIntoView(item, profile)) {
+				return false;
+			}
+		}
+
+		// Get screen point after scrolling
+		Point itemPoint = runOnClientThread(() -> getWidgetScreenPoint(item));
+		if (itemPoint == null) return false;
+
+		int jitterX = (int) ((Math.random() - 0.5) * profile.jitterRadius * 2);
+		int jitterY = (int) ((Math.random() - 0.5) * profile.jitterRadius * 2);
+
+		return rightClickAndSelect(
+			itemPoint.getX() + jitterX,
+			itemPoint.getY() + jitterY,
+			option, null, profile
+		);
+	}
+
+	/**
+	 * Find a bank inventory item (bottom panel) by name.
+	 * Must be called on client thread.
+	 */
+	private Widget findBankInventoryItemWidget(String itemName) {
+		Widget bankInvWidget = client.getWidget(InterfaceID.Bankside.ITEMS);
+		if (bankInvWidget == null || bankInvWidget.isHidden()) {
+			log.warn("Bank inventory widget not visible");
+			return null;
+		}
+
+		Widget[] children = bankInvWidget.getDynamicChildren();
+		if (children == null) return null;
+
+		String search = itemName.toLowerCase();
+		for (Widget child : children) {
+			if (child == null || child.isHidden()) continue;
+			int itemId = child.getItemId();
+			if (itemId == -1) continue;
+
+			ItemComposition comp = client.getItemDefinition(itemId);
+			if (comp.getName().toLowerCase().contains(search)) {
+				log.info("Found bank inventory item '{}' (actual: '{}') at index {}",
+					itemName, comp.getName(), child.getIndex());
+				return child;
+			}
+		}
+
+		log.warn("Bank inventory item '{}' not found", itemName);
+		return null;
+	}
+
+	/**
+	 * Click an item in the bank inventory panel (deposit it with default quantity).
+	 */
+	public boolean clickBankInventoryItem(String itemName, MouseMovementProfile profile) {
+		return runOnClientThread(() -> {
+			Widget item = findBankInventoryItemWidget(itemName);
+			if (item == null) return false;
+			return clickWidgetInternal(item, profile);
+		});
+	}
+
+	/**
+	 * Right-click a bank inventory item and select an option (e.g., "Deposit-1", "Deposit-All").
+	 */
+	public boolean rightClickBankInventoryItemAndSelect(String itemName, String option, MouseMovementProfile profile) {
+		Point itemPoint = runOnClientThread(() -> {
+			Widget item = findBankInventoryItemWidget(itemName);
+			if (item == null) return null;
+			return getWidgetScreenPoint(item);
+		});
+
+		if (itemPoint == null) return false;
+
+		int jitterX = (int) ((Math.random() - 0.5) * profile.jitterRadius * 2);
+		int jitterY = (int) ((Math.random() - 0.5) * profile.jitterRadius * 2);
+
+		return rightClickAndSelect(
+			itemPoint.getX() + jitterX,
+			itemPoint.getY() + jitterY,
+			option, null, profile
+		);
+	}
+
+	/**
+	 * Click the "Deposit inventory" button in the bank interface.
+	 */
+	public boolean depositInventory(MouseMovementProfile profile) {
+		return runOnClientThread(() -> {
+			Widget depositInv = client.getWidget(InterfaceID.Bankmain.DEPOSITINV);
+			if (depositInv == null || depositInv.isHidden()) {
+				log.warn("Deposit inventory button not visible");
+				return false;
+			}
+			return clickWidgetInternal(depositInv, profile);
+		});
+	}
+
+	/**
+	 * Click the "Deposit worn items" button in the bank interface.
+	 */
+	public boolean depositEquipment(MouseMovementProfile profile) {
+		return runOnClientThread(() -> {
+			Widget depositWorn = client.getWidget(InterfaceID.Bankmain.DEPOSITWORN);
+			if (depositWorn == null || depositWorn.isHidden()) {
+				log.warn("Deposit worn items button not visible");
+				return false;
+			}
+			return clickWidgetInternal(depositWorn, profile);
+		});
+	}
+
+	/**
+	 * Click a bank tab by index (0 = main/all tab, 1-9 = tabs 1-9).
+	 * The bank must be open.
+	 */
+	public boolean clickBankTab(int tabIndex, MouseMovementProfile profile) {
+		return runOnClientThread(() -> {
+			Widget tabContainer = client.getWidget(InterfaceID.Bankmain.TABS);
+			if (tabContainer == null || tabContainer.isHidden()) {
+				log.warn("Bank tab container not visible");
+				return false;
+			}
+
+			Widget[] children = tabContainer.getDynamicChildren();
+			if (children == null) {
+				log.warn("Bank tab container has no children");
+				return false;
+			}
+
+			// Tab widgets are dynamic children of the TABS container.
+			// Tab 0 (all items) is at index 10, tabs 1-9 start at index 11.
+			// Each tab widget takes up 1 slot.
+			int widgetIndex = 10 + tabIndex;
+			if (widgetIndex >= children.length) {
+				log.warn("Bank tab index {} out of range (max children: {})", tabIndex, children.length);
+				return false;
+			}
+
+			Widget tabWidget = children[widgetIndex];
+			if (tabWidget == null || tabWidget.isHidden()) {
+				log.warn("Bank tab {} widget is null or hidden", tabIndex);
+				return false;
+			}
+
+			log.info("Clicking bank tab {}", tabIndex);
+			return clickWidgetInternal(tabWidget, profile);
+		});
+	}
+
+	/**
+	 * Set the bank withdraw quantity mode by clicking the appropriate button.
+	 * Valid values: 1, 5, 10, -1 (X), 0 (All)
+	 */
+	public boolean setBankQuantity(int quantity, MouseMovementProfile profile) {
+		return runOnClientThread(() -> {
+			int widgetId;
+			switch (quantity) {
+				case 1:  widgetId = InterfaceID.Bankmain.QUANTITY1; break;
+				case 5:  widgetId = InterfaceID.Bankmain.QUANTITY5; break;
+				case 10: widgetId = InterfaceID.Bankmain.QUANTITY10; break;
+				case -1: widgetId = InterfaceID.Bankmain.QUANTITYX; break;
+				case 0:  widgetId = InterfaceID.Bankmain.QUANTITYALL; break;
+				default:
+					log.warn("Invalid bank quantity: {} (valid: 1, 5, 10, -1 for X, 0 for All)", quantity);
+					return false;
+			}
+
+			Widget quantityWidget = client.getWidget(widgetId);
+			if (quantityWidget == null || quantityWidget.isHidden()) {
+				log.warn("Bank quantity button not visible for quantity={}", quantity);
+				return false;
+			}
+
+			log.info("Setting bank quantity to {}", quantity == -1 ? "X" : quantity == 0 ? "All" : quantity);
+			return clickWidgetInternal(quantityWidget, profile);
+		});
+	}
+
+	/**
+	 * Toggle the bank note/item withdrawal mode.
+	 */
+	public boolean toggleBankNoteMode(MouseMovementProfile profile) {
+		return runOnClientThread(() -> {
+			Widget noteWidget = client.getWidget(InterfaceID.Bankmain.NOTE);
+			if (noteWidget == null || noteWidget.isHidden()) {
+				log.warn("Bank note toggle button not visible");
+				return false;
+			}
+			log.info("Toggling bank note mode");
+			return clickWidgetInternal(noteWidget, profile);
+		});
+	}
+
+	/**
+	 * Click the bank search button to activate search mode.
+	 */
+	public boolean clickBankSearch(MouseMovementProfile profile) {
+		return runOnClientThread(() -> {
+			Widget searchWidget = client.getWidget(InterfaceID.Bankmain.SEARCH);
+			if (searchWidget == null || searchWidget.isHidden()) {
+				log.warn("Bank search button not visible");
+				return false;
+			}
+			log.info("Clicking bank search button");
+			return clickWidgetInternal(searchWidget, profile);
+		});
+	}
+
+	/**
+	 * Search for an item in the bank by typing text into the search box.
+	 * This clicks the search button, waits for the input to activate, then types the query.
+	 */
+	public boolean bankSearch(String query, MouseMovementProfile profile) {
+		if (!isBankOpen()) {
+			log.warn("Bank is not open");
+			return false;
+		}
+
+		// Click the search button
+		if (!clickBankSearch(profile)) {
+			return false;
+		}
+
+		// Wait for search input to activate
+		sleep(400 + (int)(Math.random() * 200));
+
+		// Type the search query by sending key events
+		typeText(query);
+
+		// Wait for results to filter
+		sleep(300 + (int)(Math.random() * 200));
+
+		log.info("Bank search for '{}'", query);
+		return true;
+	}
+
+	/**
+	 * Type text into the currently focused input (bank search, withdraw-X dialog, etc.)
+	 * by dispatching KeyEvent objects to the game canvas.
+	 */
+	public void typeText(String text) {
+		java.awt.Canvas canvas = client.getCanvas();
+		if (canvas == null) {
+			log.warn("Cannot type text - canvas is null");
+			return;
+		}
+
+		for (char c : text.toCharArray()) {
+			// KEY_TYPED event for each character
+			canvas.dispatchEvent(new java.awt.event.KeyEvent(
+				canvas,
+				java.awt.event.KeyEvent.KEY_TYPED,
+				System.currentTimeMillis(),
+				0,
+				java.awt.event.KeyEvent.VK_UNDEFINED,
+				c
+			));
+			sleep(30 + (int)(Math.random() * 50));
+		}
+	}
+
+	/**
+	 * Press the Enter key (used to confirm withdraw-X amounts, search, etc.).
+	 */
+	public void pressEnter() {
+		java.awt.Canvas canvas = client.getCanvas();
+		if (canvas == null) return;
+
+		canvas.dispatchEvent(new java.awt.event.KeyEvent(
+			canvas,
+			java.awt.event.KeyEvent.KEY_PRESSED,
+			System.currentTimeMillis(),
+			0,
+			java.awt.event.KeyEvent.VK_ENTER,
+			'\n'
+		));
+		sleep(30 + (int)(Math.random() * 30));
+		canvas.dispatchEvent(new java.awt.event.KeyEvent(
+			canvas,
+			java.awt.event.KeyEvent.KEY_RELEASED,
+			System.currentTimeMillis(),
+			0,
+			java.awt.event.KeyEvent.VK_ENTER,
+			'\n'
+		));
+	}
+
+	/**
+	 * Withdraw a specific quantity of an item by using right-click "Withdraw-X" and typing the amount.
+	 */
+	public boolean withdrawX(String itemName, int amount, MouseMovementProfile profile) {
+		if (!rightClickBankItemAndSelect(itemName, "Withdraw-X", profile)) {
+			return false;
+		}
+
+		// Wait for the chatbox input to appear
+		sleep(600 + (int)(Math.random() * 300));
+
+		// Type the amount and press enter
+		typeText(String.valueOf(amount));
+		sleep(100 + (int)(Math.random() * 100));
+		pressEnter();
+
+		log.info("Withdrawing {} x {}", amount, itemName);
+		return true;
+	}
+
+	/**
+	 * Deposit a specific quantity of an item from the bank inventory panel
+	 * using right-click "Deposit-X" and typing the amount.
+	 */
+	public boolean depositX(String itemName, int amount, MouseMovementProfile profile) {
+		if (!rightClickBankInventoryItemAndSelect(itemName, "Deposit-X", profile)) {
+			return false;
+		}
+
+		// Wait for the chatbox input to appear
+		sleep(600 + (int)(Math.random() * 300));
+
+		// Type the amount and press enter
+		typeText(String.valueOf(amount));
+		sleep(100 + (int)(Math.random() * 100));
+		pressEnter();
+
+		log.info("Depositing {} x {}", amount, itemName);
+		return true;
+	}
+
+	/**
+	 * Get debug info about the bank widget state.
+	 */
+	public java.util.Map<String, Object> getBankDebugInfo() {
+		return runOnClientThread(() -> {
+			java.util.Map<String, Object> info = new java.util.LinkedHashMap<>();
+
+			Widget bankUniverse = client.getWidget(InterfaceID.Bankmain.UNIVERSE);
+			info.put("bankOpen", bankUniverse != null && !bankUniverse.isHidden());
+
+			Widget bankItems = client.getWidget(InterfaceID.Bankmain.ITEMS);
+			if (bankItems != null && !bankItems.isHidden()) {
+				Widget[] children = bankItems.getDynamicChildren();
+				info.put("visibleItemWidgets", children != null ? children.length : 0);
+			}
+
+			ItemContainer bankContainer = client.getItemContainer(InventoryID.BANK);
+			if (bankContainer != null) {
+				Item[] items = bankContainer.getItems();
+				int count = 0;
+				for (Item item : items) {
+					if (item.getId() != -1 && item.getId() != 6512) count++;
+				}
+				info.put("totalBankItems", count);
+				info.put("totalBankSlots", items.length);
+			}
+
+			Widget bankInv = client.getWidget(InterfaceID.Bankside.ITEMS);
+			info.put("bankInventoryVisible", bankInv != null && !bankInv.isHidden());
+
+			// Check quantity buttons
+			for (int q : new int[]{1, 5, 10}) {
+				int wid;
+				switch (q) {
+					case 1: wid = InterfaceID.Bankmain.QUANTITY1; break;
+					case 5: wid = InterfaceID.Bankmain.QUANTITY5; break;
+					default: wid = InterfaceID.Bankmain.QUANTITY10; break;
+				}
+				Widget w = client.getWidget(wid);
+				info.put("quantity" + q + "Visible", w != null && !w.isHidden());
+			}
+
+			Widget noteW = client.getWidget(InterfaceID.Bankmain.NOTE);
+			info.put("noteButtonVisible", noteW != null && !noteW.isHidden());
+
+			Widget searchW = client.getWidget(InterfaceID.Bankmain.SEARCH);
+			info.put("searchButtonVisible", searchW != null && !searchW.isHidden());
+
+			return info;
+		});
 	}
 
 	// ===== TASK SEQUENCER =====

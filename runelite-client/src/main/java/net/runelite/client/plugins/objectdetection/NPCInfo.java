@@ -36,7 +36,7 @@ public class NPCInfo {
      */
     public boolean hasAction(String action) {
         return actions != null && actions.stream()
-                .anyMatch(a -> a.equalsIgnoreCase(action));
+                .anyMatch(a -> a != null && a.equalsIgnoreCase(action));
     }
 
     /**

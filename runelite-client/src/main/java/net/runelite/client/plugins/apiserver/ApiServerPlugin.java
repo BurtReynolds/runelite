@@ -208,6 +208,24 @@ public class ApiServerPlugin extends Plugin {
         app.post("/api/v1/interaction/menu/right-click-select", this::handleRightClickAndSelect);
         app.get("/api/v1/interaction/menu/options", this::handleGetMenuOptions);
 
+        // Virtual cursor overlay
+        app.post("/api/v1/interaction/cursor/toggle", this::handleCursorToggle);
+        app.get("/api/v1/interaction/cursor/status", this::handleCursorStatus);
+
+        // Bank interaction endpoints
+        app.get("/api/v1/bank/items", this::handleGetBankItems);
+        app.get("/api/v1/bank/status", this::handleBankStatus);
+        app.get("/api/v1/bank/debug", this::handleBankDebug);
+        app.post("/api/v1/bank/close", this::handleBankClose);
+        app.post("/api/v1/bank/deposit-inventory", this::handleBankDepositInventory);
+        app.post("/api/v1/bank/deposit-equipment", this::handleBankDepositEquipment);
+        app.post("/api/v1/bank/tab", this::handleBankTab);
+        app.post("/api/v1/bank/quantity", this::handleBankQuantity);
+        app.post("/api/v1/bank/note-mode", this::handleBankNoteMode);
+        app.post("/api/v1/bank/search", this::handleBankSearch);
+        app.post("/api/v1/bank/withdraw", this::handleBankWithdraw);
+        app.post("/api/v1/bank/deposit", this::handleBankDeposit);
+
         // Web walking endpoints
         app.post("/api/v1/interaction/walk", this::handleWebWalk);
         app.post("/api/v1/interaction/walk/cancel", this::handleWebWalkCancel);
@@ -306,6 +324,20 @@ public class ApiServerPlugin extends Plugin {
         endpoints.put("taskExecute", "POST /api/v1/interaction/task/execute {steps: [...], profile?, stopOnFailure?}");
         endpoints.put("taskStatus", "GET /api/v1/interaction/task/status");
         endpoints.put("taskCancel", "POST /api/v1/interaction/task/cancel");
+
+        // Bank endpoints
+        endpoints.put("bankItems", "GET /api/v1/bank/items");
+        endpoints.put("bankStatus", "GET /api/v1/bank/status");
+        endpoints.put("bankDebug", "GET /api/v1/bank/debug");
+        endpoints.put("bankClose", "POST /api/v1/bank/close");
+        endpoints.put("bankDepositInventory", "POST /api/v1/bank/deposit-inventory");
+        endpoints.put("bankDepositEquipment", "POST /api/v1/bank/deposit-equipment");
+        endpoints.put("bankTab", "POST /api/v1/bank/tab {tab}");
+        endpoints.put("bankQuantity", "POST /api/v1/bank/quantity {quantity}");
+        endpoints.put("bankNoteMode", "POST /api/v1/bank/note-mode");
+        endpoints.put("bankSearch", "POST /api/v1/bank/search {query}");
+        endpoints.put("bankWithdraw", "POST /api/v1/bank/withdraw {itemName, quantity?, option?}");
+        endpoints.put("bankDeposit", "POST /api/v1/bank/deposit {itemName, quantity?, option?}");
 
         // Chat endpoints
         endpoints.put("chatRecent", "GET /api/v1/chat/recent?limit=50&type=GAMEMESSAGE");
@@ -1366,6 +1398,58 @@ public class ApiServerPlugin extends Plugin {
                     getIntParam(params, "plane", 0)
                 );
                 return true;
+            // Bank steps
+            case "click_bank_item":
+                seq.clickBankItem((String) params.get("itemName"));
+                return true;
+            case "right_click_bank_item_select":
+                seq.rightClickBankItemAndSelect(
+                    (String) params.get("itemName"),
+                    (String) params.get("option")
+                );
+                return true;
+            case "click_bank_inventory_item":
+                seq.clickBankInventoryItem((String) params.get("itemName"));
+                return true;
+            case "right_click_bank_inventory_item_select":
+                seq.rightClickBankInventoryItemAndSelect(
+                    (String) params.get("itemName"),
+                    (String) params.get("option")
+                );
+                return true;
+            case "deposit_inventory":
+                seq.depositInventory();
+                return true;
+            case "deposit_equipment":
+                seq.depositEquipment();
+                return true;
+            case "click_bank_tab":
+                seq.clickBankTab(((Number) params.get("tab")).intValue());
+                return true;
+            case "set_bank_quantity":
+                seq.setBankQuantity(((Number) params.get("quantity")).intValue());
+                return true;
+            case "toggle_bank_note_mode":
+                seq.toggleBankNoteMode();
+                return true;
+            case "bank_search":
+                seq.bankSearch((String) params.get("query"));
+                return true;
+            case "withdraw_x":
+                seq.withdrawX(
+                    (String) params.get("itemName"),
+                    ((Number) params.get("amount")).intValue()
+                );
+                return true;
+            case "deposit_x":
+                seq.depositX(
+                    (String) params.get("itemName"),
+                    ((Number) params.get("amount")).intValue()
+                );
+                return true;
+            case "close_bank":
+                seq.closeBank();
+                return true;
             case "delay":
                 if (params.containsKey("maxMs")) {
                     seq.delay(
@@ -1471,6 +1555,292 @@ public class ApiServerPlugin extends Plugin {
 
         activeSequence.cancel();
         ctx.json(Map.of("success", true, "message", "Task sequence cancellation requested"));
+    }
+
+    // ===== Cursor Overlay Handlers =====
+
+    private void handleCursorToggle(Context ctx) {
+        if (interactionPlugin == null) {
+            ctx.status(503).json(createError("Interaction plugin not loaded"));
+            return;
+        }
+
+        boolean current = interactionPlugin.isVirtualCursorEnabled();
+        interactionPlugin.setVirtualCursorEnabled(!current);
+        ctx.json(Map.of("enabled", !current));
+    }
+
+    private void handleCursorStatus(Context ctx) {
+        if (interactionPlugin == null) {
+            ctx.status(503).json(createError("Interaction plugin not loaded"));
+            return;
+        }
+
+        ctx.json(Map.of("enabled", interactionPlugin.isVirtualCursorEnabled()));
+    }
+
+    // ===== Bank Handlers =====
+
+    private void handleGetBankItems(Context ctx) {
+        if (interactionPlugin == null) {
+            ctx.status(503).json(createError("Interaction plugin not loaded"));
+            return;
+        }
+
+        if (!interactionPlugin.isBankOpen()) {
+            ctx.status(400).json(createError("Bank is not open"));
+            return;
+        }
+
+        var items = interactionPlugin.getBankItems();
+        ctx.json(Map.of(
+            "bankOpen", true,
+            "count", items.size(),
+            "items", items
+        ));
+    }
+
+    private void handleBankStatus(Context ctx) {
+        if (interactionPlugin == null) {
+            ctx.status(503).json(createError("Interaction plugin not loaded"));
+            return;
+        }
+
+        ctx.json(Map.of("bankOpen", interactionPlugin.isBankOpen()));
+    }
+
+    private void handleBankDebug(Context ctx) {
+        if (interactionPlugin == null) {
+            ctx.status(503).json(createError("Interaction plugin not loaded"));
+            return;
+        }
+
+        ctx.json(interactionPlugin.getBankDebugInfo());
+    }
+
+    private void handleBankClose(Context ctx) {
+        if (interactionPlugin == null) {
+            ctx.status(503).json(createError("Interaction plugin not loaded"));
+            return;
+        }
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> body = new HashMap<>();
+        try { body = ctx.bodyAsClass(Map.class); } catch (Exception ignored) {}
+
+        String profileName = (String) body.getOrDefault("profile", "NORMAL");
+        MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+
+        boolean success = interactionPlugin.closeBank(profile);
+        ctx.json(Map.of("success", success));
+    }
+
+    private void handleBankDepositInventory(Context ctx) {
+        if (interactionPlugin == null) {
+            ctx.status(503).json(createError("Interaction plugin not loaded"));
+            return;
+        }
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> body = new HashMap<>();
+        try { body = ctx.bodyAsClass(Map.class); } catch (Exception ignored) {}
+
+        String profileName = (String) body.getOrDefault("profile", "NORMAL");
+        MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+
+        boolean success = interactionPlugin.depositInventory(profile);
+        ctx.json(Map.of("success", success));
+    }
+
+    private void handleBankDepositEquipment(Context ctx) {
+        if (interactionPlugin == null) {
+            ctx.status(503).json(createError("Interaction plugin not loaded"));
+            return;
+        }
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> body = new HashMap<>();
+        try { body = ctx.bodyAsClass(Map.class); } catch (Exception ignored) {}
+
+        String profileName = (String) body.getOrDefault("profile", "NORMAL");
+        MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+
+        boolean success = interactionPlugin.depositEquipment(profile);
+        ctx.json(Map.of("success", success));
+    }
+
+    private void handleBankTab(Context ctx) {
+        if (interactionPlugin == null) {
+            ctx.status(503).json(createError("Interaction plugin not loaded"));
+            return;
+        }
+
+        try {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> body = ctx.bodyAsClass(Map.class);
+
+            int tab = ((Number) body.get("tab")).intValue();
+            String profileName = (String) body.getOrDefault("profile", "NORMAL");
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+
+            if (tab < 0 || tab > 9) {
+                ctx.status(400).json(createError("Tab must be 0-9 (0=all, 1-9=tabs)"));
+                return;
+            }
+
+            boolean success = interactionPlugin.clickBankTab(tab, profile);
+            ctx.json(Map.of("success", success, "tab", tab));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    private void handleBankQuantity(Context ctx) {
+        if (interactionPlugin == null) {
+            ctx.status(503).json(createError("Interaction plugin not loaded"));
+            return;
+        }
+
+        try {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> body = ctx.bodyAsClass(Map.class);
+
+            int quantity = ((Number) body.get("quantity")).intValue();
+            String profileName = (String) body.getOrDefault("profile", "NORMAL");
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+
+            boolean success = interactionPlugin.setBankQuantity(quantity, profile);
+            ctx.json(Map.of("success", success, "quantity", quantity));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    private void handleBankNoteMode(Context ctx) {
+        if (interactionPlugin == null) {
+            ctx.status(503).json(createError("Interaction plugin not loaded"));
+            return;
+        }
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> body = new HashMap<>();
+        try { body = ctx.bodyAsClass(Map.class); } catch (Exception ignored) {}
+
+        String profileName = (String) body.getOrDefault("profile", "NORMAL");
+        MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+
+        boolean success = interactionPlugin.toggleBankNoteMode(profile);
+        ctx.json(Map.of("success", success));
+    }
+
+    private void handleBankSearch(Context ctx) {
+        if (interactionPlugin == null) {
+            ctx.status(503).json(createError("Interaction plugin not loaded"));
+            return;
+        }
+
+        try {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> body = ctx.bodyAsClass(Map.class);
+
+            String query = (String) body.get("query");
+            if (query == null || query.trim().isEmpty()) {
+                ctx.status(400).json(createError("'query' is required"));
+                return;
+            }
+
+            String profileName = (String) body.getOrDefault("profile", "NORMAL");
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+
+            boolean success = interactionPlugin.bankSearch(query, profile);
+            ctx.json(Map.of("success", success, "query", query));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    private void handleBankWithdraw(Context ctx) {
+        if (interactionPlugin == null) {
+            ctx.status(503).json(createError("Interaction plugin not loaded"));
+            return;
+        }
+
+        try {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> body = ctx.bodyAsClass(Map.class);
+
+            String itemName = (String) body.get("itemName");
+            if (itemName == null || itemName.trim().isEmpty()) {
+                ctx.status(400).json(createError("'itemName' is required"));
+                return;
+            }
+
+            String profileName = (String) body.getOrDefault("profile", "NORMAL");
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+
+            // Check for explicit option override (e.g., "Withdraw-All", "Withdraw-5")
+            String option = (String) body.get("option");
+            if (option != null && !option.trim().isEmpty()) {
+                boolean success = interactionPlugin.rightClickBankItemAndSelect(itemName, option, profile);
+                ctx.json(Map.of("success", success, "itemName", itemName, "option", option));
+                return;
+            }
+
+            // Check for quantity-based withdrawal
+            int quantity = getIntParam(body, "quantity", 0);
+            if (quantity > 0) {
+                boolean success = interactionPlugin.withdrawX(itemName, quantity, profile);
+                ctx.json(Map.of("success", success, "itemName", itemName, "quantity", quantity));
+            } else {
+                // Default: left-click (withdraw current default quantity)
+                boolean success = interactionPlugin.clickBankItem(itemName, profile);
+                ctx.json(Map.of("success", success, "itemName", itemName, "action", "default click"));
+            }
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    private void handleBankDeposit(Context ctx) {
+        if (interactionPlugin == null) {
+            ctx.status(503).json(createError("Interaction plugin not loaded"));
+            return;
+        }
+
+        try {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> body = ctx.bodyAsClass(Map.class);
+
+            String itemName = (String) body.get("itemName");
+            if (itemName == null || itemName.trim().isEmpty()) {
+                ctx.status(400).json(createError("'itemName' is required"));
+                return;
+            }
+
+            String profileName = (String) body.getOrDefault("profile", "NORMAL");
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+
+            // Check for explicit option override
+            String option = (String) body.get("option");
+            if (option != null && !option.trim().isEmpty()) {
+                boolean success = interactionPlugin.rightClickBankInventoryItemAndSelect(itemName, option, profile);
+                ctx.json(Map.of("success", success, "itemName", itemName, "option", option));
+                return;
+            }
+
+            // Check for quantity-based deposit
+            int quantity = getIntParam(body, "quantity", 0);
+            if (quantity > 0) {
+                boolean success = interactionPlugin.depositX(itemName, quantity, profile);
+                ctx.json(Map.of("success", success, "itemName", itemName, "quantity", quantity));
+            } else {
+                // Default: left-click (deposit current default quantity)
+                boolean success = interactionPlugin.clickBankInventoryItem(itemName, profile);
+                ctx.json(Map.of("success", success, "itemName", itemName, "action", "default click"));
+            }
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
     }
 
     // ===== Skills Handlers =====
