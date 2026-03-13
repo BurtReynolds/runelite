@@ -21,6 +21,9 @@ public class PlayerState {
     int animation;
     boolean isMoving;
     boolean isInteracting;
+    int specialAttackPercent;
+    int poisonStatus;
+    String poisonType;
     long timestamp;
 
     public int getX() {

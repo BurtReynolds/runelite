@@ -64,6 +64,15 @@ public class GameStateManager {
         int maxPrayer = client.getRealSkillLevel(Skill.PRAYER);
         int energy = client.getEnergy();
         int weight = client.getWeight();
+        int specialAttackPercent = client.getVarpValue(net.runelite.api.VarPlayer.SPECIAL_ATTACK_PERCENT) / 10;
+        int poisonStatus = client.getVarpValue(net.runelite.api.VarPlayer.POISON);
+
+        String poisonType;
+        if (poisonStatus >= 1000000) poisonType = "venom";
+        else if (poisonStatus > 0) poisonType = "poison";
+        else if (poisonStatus < -38) poisonType = "venom_immune";
+        else if (poisonStatus < 0) poisonType = "poison_immune";
+        else poisonType = "none";
 
         // Check if player has an interacting target (NPC, player, etc.)
         boolean hasInteractingTarget = localPlayer.getInteracting() != null;
@@ -82,6 +91,9 @@ public class GameStateManager {
             localPlayer.getAnimation(),
             localPlayer.getPoseAnimation() != localPlayer.getIdlePoseAnimation(),  // isMoving
             hasInteractingTarget,
+            specialAttackPercent,
+            poisonStatus,
+            poisonType,
             System.currentTimeMillis()
         );
     }

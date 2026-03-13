@@ -968,6 +968,202 @@ public class TaskSequencer {
 		return this;
 	}
 
+	// ===== Grand Exchange Steps =====
+
+	public TaskSequencer geClickSlot(int slot) {
+		steps.add(new TaskStep("geClickSlot(" + slot + ")", () ->
+			interaction.clickGrandExchangeSlot(slot, defaultProfile)));
+		return this;
+	}
+
+	public TaskSequencer geBuy(int slot) {
+		steps.add(new TaskStep("geBuy(" + slot + ")", () ->
+			interaction.clickGrandExchangeBuy(slot, defaultProfile)));
+		return this;
+	}
+
+	public TaskSequencer geSell(int slot) {
+		steps.add(new TaskStep("geSell(" + slot + ")", () ->
+			interaction.clickGrandExchangeSell(slot, defaultProfile)));
+		return this;
+	}
+
+	public TaskSequencer geSearch(String item) {
+		steps.add(new TaskStep("geSearch(" + item + ")", () ->
+			interaction.searchGrandExchangeItem(item)));
+		return this;
+	}
+
+	public TaskSequencer geSetPrice(int price) {
+		steps.add(new TaskStep("geSetPrice(" + price + ")", () ->
+			interaction.setGrandExchangePrice(price, defaultProfile)));
+		return this;
+	}
+
+	public TaskSequencer geSetQuantity(int quantity) {
+		steps.add(new TaskStep("geSetQuantity(" + quantity + ")", () ->
+			interaction.setGrandExchangeQuantity(quantity, defaultProfile)));
+		return this;
+	}
+
+	public TaskSequencer geConfirm() {
+		steps.add(new TaskStep("geConfirm", () ->
+			interaction.confirmGrandExchangeOffer(defaultProfile)));
+		return this;
+	}
+
+	public TaskSequencer geCollect() {
+		steps.add(new TaskStep("geCollect", () ->
+			interaction.collectGrandExchangeOffers(defaultProfile)));
+		return this;
+	}
+
+	public TaskSequencer geAbort(int slot) {
+		steps.add(new TaskStep("geAbort(" + slot + ")", () ->
+			interaction.abortGrandExchangeOffer(slot, defaultProfile)));
+		return this;
+	}
+
+	public TaskSequencer geClose() {
+		steps.add(new TaskStep("geClose", () ->
+			interaction.closeGrandExchange(defaultProfile)));
+		return this;
+	}
+
+	public TaskSequencer geBack() {
+		steps.add(new TaskStep("geBack", () ->
+			interaction.grandExchangeBack(defaultProfile)));
+		return this;
+	}
+
+	// ===== Break Check Step =====
+
+	public TaskSequencer breakCheck() {
+		steps.add(new TaskStep("breakCheck", () -> {
+			BreakHandler bh = interaction.getBreakHandler();
+			if (bh != null && bh.shouldPause()) {
+				log.info("Break handler requests pause — waiting for break to end");
+				while (bh.shouldPause() && !cancelled.get()) {
+					Thread.sleep(1000);
+				}
+				log.info("Break ended — resuming task sequence");
+			}
+			return true;
+		}));
+		return this;
+	}
+
+	// ===== Enhanced Combat Conditional Waits =====
+
+	public TaskSequencer waitUntilPrayerAbove(int threshold, long timeoutMs) {
+		steps.add(new TaskStep("waitUntilPrayerAbove(" + threshold + ")", () -> {
+			long deadline = System.currentTimeMillis() + timeoutMs;
+			while (System.currentTimeMillis() < deadline && !cancelled.get()) {
+				if (gameStatePlugin != null && gameStatePlugin.getCombatStateManager() != null) {
+					if (gameStatePlugin.getCombatStateManager().getPrayer() > threshold) return true;
+				}
+				Thread.sleep(100);
+			}
+			return false;
+		}));
+		return this;
+	}
+
+	public TaskSequencer waitUntilPrayerBelow(int threshold, long timeoutMs) {
+		steps.add(new TaskStep("waitUntilPrayerBelow(" + threshold + ")", () -> {
+			long deadline = System.currentTimeMillis() + timeoutMs;
+			while (System.currentTimeMillis() < deadline && !cancelled.get()) {
+				if (gameStatePlugin != null && gameStatePlugin.getCombatStateManager() != null) {
+					if (gameStatePlugin.getCombatStateManager().getPrayer() < threshold) return true;
+				}
+				Thread.sleep(100);
+			}
+			return false;
+		}));
+		return this;
+	}
+
+	public TaskSequencer waitUntilSpecialAbove(int threshold, long timeoutMs) {
+		steps.add(new TaskStep("waitUntilSpecialAbove(" + threshold + ")", () -> {
+			long deadline = System.currentTimeMillis() + timeoutMs;
+			while (System.currentTimeMillis() < deadline && !cancelled.get()) {
+				if (gameStatePlugin != null && gameStatePlugin.getCombatStateManager() != null) {
+					if (gameStatePlugin.getCombatStateManager().getSpecialAttackPercent() >= threshold) return true;
+				}
+				Thread.sleep(100);
+			}
+			return false;
+		}));
+		return this;
+	}
+
+	public TaskSequencer waitUntilNotInCombat(long timeoutMs) {
+		steps.add(new TaskStep("waitUntilNotInCombat", () -> {
+			long deadline = System.currentTimeMillis() + timeoutMs;
+			while (System.currentTimeMillis() < deadline && !cancelled.get()) {
+				if (gameStatePlugin != null && gameStatePlugin.getCombatStateManager() != null) {
+					if (!gameStatePlugin.getCombatStateManager().isInCombat()) return true;
+				}
+				Thread.sleep(100);
+			}
+			return false;
+		}));
+		return this;
+	}
+
+	public TaskSequencer waitUntilTargetDead(long timeoutMs) {
+		steps.add(new TaskStep("waitUntilTargetDead", () -> {
+			long deadline = System.currentTimeMillis() + timeoutMs;
+			while (System.currentTimeMillis() < deadline && !cancelled.get()) {
+				if (gameStatePlugin != null && gameStatePlugin.getCombatStateManager() != null) {
+					if (gameStatePlugin.getCombatStateManager().getTargetName() == null) return true;
+				}
+				Thread.sleep(100);
+			}
+			return false;
+		}));
+		return this;
+	}
+
+	// ===== Login / Bank Pin Steps =====
+
+	public TaskSequencer login(String username, String password) {
+		steps.add(new TaskStep("login", () ->
+			interaction.login(username, password)));
+		return this;
+	}
+
+	public TaskSequencer enterBankPin(String pin) {
+		steps.add(new TaskStep("enterBankPin", () ->
+			interaction.enterBankPin(pin, defaultProfile)));
+		return this;
+	}
+
+	public TaskSequencer waitUntilLoggedIn(long timeoutMs) {
+		steps.add(new TaskStep("waitUntilLoggedIn", () -> {
+			long deadline = System.currentTimeMillis() + timeoutMs;
+			while (System.currentTimeMillis() < deadline && !cancelled.get()) {
+				String state = interaction.getLoginState();
+				if ("LOGGED_IN".equals(state)) return true;
+				Thread.sleep(500);
+			}
+			return false;
+		}));
+		return this;
+	}
+
+	public TaskSequencer waitUntilBankPinOpen(long timeoutMs) {
+		steps.add(new TaskStep("waitUntilBankPinOpen", () -> {
+			long deadline = System.currentTimeMillis() + timeoutMs;
+			while (System.currentTimeMillis() < deadline && !cancelled.get()) {
+				if (interaction.isBankPinOpen()) return true;
+				Thread.sleep(500);
+			}
+			return false;
+		}));
+		return this;
+	}
+
 	// ===== Custom Steps =====
 
 	public TaskSequencer custom(String description, BooleanSupplier action) {

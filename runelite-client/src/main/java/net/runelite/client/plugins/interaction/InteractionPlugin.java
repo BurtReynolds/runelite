@@ -67,6 +67,7 @@ public class InteractionPlugin extends Plugin {
 	private WebWalker webWalker;
 	private VirtualMouseOverlay virtualMouseOverlay;
 	private AntiBanService antiBanService;
+	private BreakHandler breakHandler;
 
 	@Override
 	protected void startUp() throws Exception {
@@ -98,12 +99,19 @@ public class InteractionPlugin extends Plugin {
 		// Initialize anti-ban service
 		antiBanService = new AntiBanService(this, client, mouseMovement);
 		log.info("Anti-ban service initialized");
+
+		// Initialize break handler (disabled by default)
+		breakHandler = new BreakHandler(this);
+		log.info("Break handler initialized (disabled by default)");
 	}
 
 	@Override
 	protected void shutDown() throws Exception {
 		if (antiBanService != null) {
 			antiBanService.stop();
+		}
+		if (breakHandler != null) {
+			breakHandler.stop();
 		}
 		if (virtualMouseOverlay != null) {
 			overlayManager.remove(virtualMouseOverlay);
@@ -2049,6 +2057,21 @@ public class InteractionPlugin extends Plugin {
 
 		String search = itemName.toLowerCase();
 
+		// First pass: exact name match (case-insensitive)
+		for (Widget child : children) {
+			if (child == null || child.isHidden()) continue;
+			int itemId = child.getItemId();
+			if (itemId == -1 || itemId == 6512) continue;
+
+			ItemComposition comp = client.getItemDefinition(itemId);
+			if (comp.getName().toLowerCase().equals(search)) {
+				log.info("Found bank item '{}' (exact match) at index {}",
+					comp.getName(), child.getIndex());
+				return child;
+			}
+		}
+
+		// Second pass: partial match (contains) as fallback
 		for (Widget child : children) {
 			if (child == null || child.isHidden()) continue;
 			int itemId = child.getItemId();
@@ -2056,7 +2079,7 @@ public class InteractionPlugin extends Plugin {
 
 			ItemComposition comp = client.getItemDefinition(itemId);
 			if (comp.getName().toLowerCase().contains(search)) {
-				log.info("Found bank item '{}' (actual: '{}') at index {}",
+				log.info("Found bank item '{}' (partial match: '{}') at index {}",
 					itemName, comp.getName(), child.getIndex());
 				return child;
 			}
@@ -2085,7 +2108,9 @@ public class InteractionPlugin extends Plugin {
 
 	/**
 	 * Scroll a bank item into view by dispatching mouse wheel events on the bank container.
-	 * Returns true if the item is now visible.
+	 * Scrolls until the item is near the center of the visible area so that right-click
+	 * menus have room to open without going off-screen.
+	 * Returns true if the item is now visible and centered.
 	 */
 	private boolean scrollBankItemIntoView(Widget item, MouseMovementProfile profile) {
 		Widget container = client.getWidget(InterfaceID.Bankmain.ITEMS_CONTAINER);
@@ -2103,15 +2128,10 @@ public class InteractionPlugin extends Plugin {
 		mouseMovement.moveMouse(new java.awt.Point(centerX, centerY), profile);
 		sleep(100 + (int)(Math.random() * 100));
 
-		// Scroll in the direction we need to go
-		for (int attempt = 0; attempt < 40; attempt++) {
-			Boolean visible = runOnClientThread(() -> isBankItemVisible(item));
-			if (Boolean.TRUE.equals(visible)) {
-				sleep(100);
-				return true;
-			}
-
-			// Determine scroll direction: if item is below visible area, scroll down (+), else up (-)
+		// Scroll until the item is near the vertical center of the container.
+		// We use a "center zone" — the middle 60% of the container height.
+		// This ensures right-click menus have room to open above or below.
+		for (int attempt = 0; attempt < 50; attempt++) {
 			int scrollDirection = runOnClientThread(() -> {
 				Widget c = client.getWidget(InterfaceID.Bankmain.ITEMS_CONTAINER);
 				if (c == null) return 0;
@@ -2119,16 +2139,23 @@ public class InteractionPlugin extends Plugin {
 				Rectangle iBounds = item.getBounds();
 				if (cBounds == null || iBounds == null) return 0;
 
-				int itemY = (int)(iBounds.getY() + iBounds.getHeight() / 2);
+				int itemCenterY = (int)(iBounds.getY() + iBounds.getHeight() / 2);
 				int containerTop = (int)cBounds.getY();
-				int containerBottom = (int)(cBounds.getY() + cBounds.getHeight());
+				int containerHeight = (int)cBounds.getHeight();
 
-				if (itemY > containerBottom) return 1;   // Need to scroll down
-				if (itemY < containerTop) return -1;      // Need to scroll up
-				return 0;
+				// Define center zone: 20% to 80% of container height
+				int zoneTop = containerTop + (int)(containerHeight * 0.20);
+				int zoneBottom = containerTop + (int)(containerHeight * 0.80);
+
+				if (itemCenterY > zoneBottom) return 1;   // Item below center zone, scroll down
+				if (itemCenterY < zoneTop) return -1;      // Item above center zone, scroll up
+				return 0;                                   // Item is in the center zone
 			});
 
-			if (scrollDirection == 0) return true;
+			if (scrollDirection == 0) {
+				sleep(100);
+				return true;
+			}
 
 			// Dispatch mouse wheel event
 			java.awt.Canvas canvas = client.getCanvas();
@@ -2149,7 +2176,13 @@ public class InteractionPlugin extends Plugin {
 			sleep(80 + (int)(Math.random() * 60));
 		}
 
-		log.warn("Could not scroll bank item into view after 40 scroll attempts");
+		// Fallback: even if not perfectly centered, check if at least visible
+		Boolean visible = runOnClientThread(() -> isBankItemVisible(item));
+		if (Boolean.TRUE.equals(visible)) {
+			return true;
+		}
+
+		log.warn("Could not scroll bank item into view after 50 scroll attempts");
 		return false;
 	}
 
@@ -3378,6 +3411,296 @@ public class InteractionPlugin extends Plugin {
 		});
 	}
 
+	// ===== LOGIN =====
+
+	/**
+	 * Get stored credentials from system properties.
+	 * Supports default (rs.username) and numbered accounts (rs.account1.username).
+	 */
+	public java.util.Map<String, String> getStoredCredentials(String accountId) {
+		java.util.Map<String, String> creds = new java.util.LinkedHashMap<>();
+		String prefix;
+		if (accountId == null || accountId.isEmpty() || "default".equalsIgnoreCase(accountId)) {
+			prefix = "rs.";
+		} else {
+			prefix = "rs.account" + accountId + ".";
+		}
+		String username = System.getProperty(prefix + "username");
+		String password = System.getProperty(prefix + "password");
+		String bankPin = System.getProperty(prefix + "bankpin");
+		String world = System.getProperty(prefix + "world");
+
+		if (username != null) creds.put("username", username);
+		if (password != null) creds.put("password", password);
+		if (bankPin != null) creds.put("bankPin", bankPin);
+		if (world != null) creds.put("world", world);
+		return creds;
+	}
+
+	/**
+	 * Login using stored credentials from system properties (.env file).
+	 * @param accountId null/"default" for RS_USERNAME, or "1","2",etc for ACCOUNT1_USERNAME
+	 */
+	public boolean loginWithStoredCredentials(String accountId) {
+		java.util.Map<String, String> creds = getStoredCredentials(accountId);
+		String username = creds.get("username");
+		String password = creds.get("password");
+		if (username == null || password == null) {
+			log.warn("No stored credentials found for account '{}'. Set RS_USERNAME/RS_PASSWORD in .env", accountId);
+			return false;
+		}
+		return login(username, password);
+	}
+
+	/**
+	 * Enter bank pin using stored credentials from system properties.
+	 */
+	public boolean enterStoredBankPin(String accountId, MouseMovementProfile profile) {
+		java.util.Map<String, String> creds = getStoredCredentials(accountId);
+		String pin = creds.get("bankPin");
+		if (pin == null) {
+			log.warn("No stored bank pin found for account '{}'. Set RS_BANK_PIN in .env", accountId);
+			return false;
+		}
+		return enterBankPin(pin, profile);
+	}
+
+	/**
+	 * Login with the given username and password.
+	 * Sets credentials on the client and clicks the login button.
+	 * Only works when on the LOGIN_SCREEN game state.
+	 */
+	public boolean login(String username, String password) {
+		String gameState = getLoginState();
+		if (!"LOGIN_SCREEN".equals(gameState) && !"LOGIN_SCREEN_AUTHENTICATOR".equals(gameState)) {
+			log.warn("Cannot login — game state is {}", gameState);
+			return false;
+		}
+
+		// Set credentials via the client API
+		runOnClientThread(() -> {
+			client.setUsername(username);
+			client.setPassword(password);
+			return null;
+		});
+
+		sleep(200 + (int)(Math.random() * 100));
+
+		// Press Enter to trigger login
+		java.awt.Canvas canvas = client.getCanvas();
+		if (canvas == null) return false;
+
+		// First Enter sets username field if needed, second triggers login
+		canvas.dispatchEvent(new java.awt.event.KeyEvent(
+			canvas, java.awt.event.KeyEvent.KEY_PRESSED, System.currentTimeMillis(), 0,
+			java.awt.event.KeyEvent.VK_ENTER, '\n'
+		));
+		sleep(50);
+		canvas.dispatchEvent(new java.awt.event.KeyEvent(
+			canvas, java.awt.event.KeyEvent.KEY_RELEASED, System.currentTimeMillis(), 0,
+			java.awt.event.KeyEvent.VK_ENTER, '\n'
+		));
+		sleep(300 + (int)(Math.random() * 200));
+
+		// Press Enter again to submit
+		canvas.dispatchEvent(new java.awt.event.KeyEvent(
+			canvas, java.awt.event.KeyEvent.KEY_PRESSED, System.currentTimeMillis(), 0,
+			java.awt.event.KeyEvent.VK_ENTER, '\n'
+		));
+		sleep(50);
+		canvas.dispatchEvent(new java.awt.event.KeyEvent(
+			canvas, java.awt.event.KeyEvent.KEY_RELEASED, System.currentTimeMillis(), 0,
+			java.awt.event.KeyEvent.VK_ENTER, '\n'
+		));
+
+		log.info("Login credentials submitted for user '{}', waiting for LOGGED_IN state...", username);
+
+		// Wait for LOGGED_IN state (the welcome/lobby screen)
+		long deadline = System.currentTimeMillis() + 30000;
+		while (System.currentTimeMillis() < deadline) {
+			sleep(1000);
+			String state = getLoginState();
+			if ("LOGGED_IN".equals(state)) {
+				break;
+			}
+		}
+
+		if (!"LOGGED_IN".equals(getLoginState())) {
+			log.warn("Login did not reach LOGGED_IN state within 30s, current state: {}", getLoginState());
+			return false;
+		}
+
+		// Dismiss the "Click here to play" welcome screen if present
+		sleep(1000 + (int)(Math.random() * 500));
+		dismissWelcomeScreen();
+
+		log.info("Login complete for user '{}'", username);
+		return true;
+	}
+
+	/**
+	 * Check if the "Click here to play" welcome screen is visible and dismiss it.
+	 * This screen appears after credentials are accepted but before the game world loads.
+	 */
+	private void dismissWelcomeScreen() {
+		for (int attempt = 0; attempt < 5; attempt++) {
+			Boolean welcomeVisible = runOnClientThread(() -> {
+				Widget welcome = client.getWidget(InterfaceID.WELCOME_SCREEN, 0);
+				return welcome != null && !welcome.isHidden();
+			});
+
+			if (welcomeVisible == null || !welcomeVisible) {
+				log.info("Welcome screen not visible (attempt {}), game world should be loaded", attempt);
+				return;
+			}
+
+			log.info("Welcome screen detected (attempt {}), clicking PLAY button...", attempt);
+
+			// Click the PLAY widget — the "CLICK HERE TO PLAY" button in the middle row.
+			// Note: BOTTOM (child 4) is the news scroll at the bottom, not the play button.
+			// The actual play button is WelcomeScreen.PLAY (child 0x48 = 72).
+			java.awt.Point playButton = runOnClientThread(() -> {
+				int packedId = InterfaceID.WelcomeScreen.PLAY;
+				int groupId = packedId >> 16;
+				int childId = packedId & 0xFFFF;
+				Widget playWidget = client.getWidget(groupId, childId);
+				if (playWidget != null && !playWidget.isHidden()) {
+					log.info("Found PLAY widget, bounds: x={} y={} w={} h={}",
+						playWidget.getCanvasLocation().getX(), playWidget.getCanvasLocation().getY(),
+						playWidget.getWidth(), playWidget.getHeight());
+					return getWidgetClickPoint(playWidget, MouseMovementProfile.FAST);
+				}
+				log.warn("PLAY widget not found or hidden");
+				return null;
+			});
+
+			if (playButton != null) {
+				mouseMovement.moveAndClick(playButton, MouseMovementProfile.FAST);
+			} else {
+				log.warn("Could not find PLAY button on welcome screen");
+			}
+
+			sleep(2000 + (int)(Math.random() * 1000));
+		}
+	}
+
+	// ===== BANK PIN =====
+
+	/**
+	 * Check if the bank pin interface is currently open.
+	 */
+	public boolean isBankPinOpen() {
+		return runOnClientThread(() -> {
+			Widget pinWidget = client.getWidget(InterfaceID.BANKPIN_KEYPAD, 0);
+			return pinWidget != null && !pinWidget.isHidden();
+		});
+	}
+
+	/**
+	 * Enter a 4-digit bank pin.
+	 * The bank pin keypad has buttons A-J (0-9) but their positions are scrambled.
+	 * We read the text label on each button to find which widget corresponds to which digit.
+	 */
+	public boolean enterBankPin(String pin, MouseMovementProfile profile) {
+		if (pin == null || pin.length() != 4) {
+			log.warn("Bank pin must be exactly 4 digits, got: '{}'", pin);
+			return false;
+		}
+
+		if (!isBankPinOpen()) {
+			log.warn("Bank pin interface is not open");
+			return false;
+		}
+
+		int keypadGroup = InterfaceID.BANKPIN_KEYPAD;
+		// Button widgets: A=0x10, B=0x12, C=0x14, D=0x16, E=0x18, F=0x1a, G=0x1c, H=0x1e, I=0x20, J=0x22
+		// These correspond to child indices 16,18,20,22,24,26,28,30,32,34
+		// Each button has a text child (the _GRAPHIC0 sibling) that shows the digit number
+		int[] buttonChildIds = {0x10, 0x12, 0x14, 0x16, 0x18, 0x1a, 0x1c, 0x1e, 0x20, 0x22};
+
+		for (int digitIndex = 0; digitIndex < 4; digitIndex++) {
+			if (!isBankPinOpen()) {
+				log.warn("Bank pin closed unexpectedly at digit {}", digitIndex + 1);
+				return false;
+			}
+
+			char targetDigit = pin.charAt(digitIndex);
+			int targetNumber = targetDigit - '0';
+			if (targetNumber < 0 || targetNumber > 9) {
+				log.warn("Invalid pin digit: '{}'", targetDigit);
+				return false;
+			}
+
+			final int digitIdx = digitIndex;
+			java.awt.Point buttonPoint = runOnClientThread(() -> {
+				// Each button widget has text showing its current number
+				for (int btnChildId : buttonChildIds) {
+					Widget button = client.getWidget(keypadGroup, btnChildId);
+					if (button == null || button.isHidden()) continue;
+
+					String btnText = button.getText();
+					if (btnText != null) {
+						String clean = btnText.replaceAll("<[^>]+>", "").trim();
+						try {
+							int btnNumber = Integer.parseInt(clean);
+							if (btnNumber == targetNumber) {
+								log.info("Pin digit {} ({}): found at button child {}", digitIdx + 1, targetNumber, btnChildId);
+								return getWidgetClickPoint(button, profile);
+							}
+						} catch (NumberFormatException ignored) {}
+					}
+
+					// Also check child widgets for the text
+					Widget[] children = button.getDynamicChildren();
+					if (children != null) {
+						for (Widget child : children) {
+							if (child == null) continue;
+							String childText = child.getText();
+							if (childText != null) {
+								String clean = childText.replaceAll("<[^>]+>", "").trim();
+								try {
+									int btnNumber = Integer.parseInt(clean);
+									if (btnNumber == targetNumber) {
+										log.info("Pin digit {} ({}): found in child text at button child {}", digitIdx + 1, targetNumber, btnChildId);
+										return getWidgetClickPoint(button, profile);
+									}
+								} catch (NumberFormatException ignored) {}
+							}
+						}
+					}
+				}
+				log.warn("Could not find button for digit {} (number {})", digitIdx + 1, targetNumber);
+				return null;
+			});
+
+			if (buttonPoint == null) return false;
+			mouseMovement.moveAndClick(buttonPoint, profile);
+			sleep(300 + (int)(Math.random() * 200));
+
+			// Move mouse away from buttons so hover doesn't obscure the next digit's text.
+			// The pin keypad scrambles after each click, and if the cursor stays on a button,
+			// the hover effect hides the number (shows "Select" tooltip instead).
+			java.awt.Point neutralPoint = runOnClientThread(() -> {
+				Widget pinWidget = client.getWidget(keypadGroup, 0);
+				if (pinWidget != null) {
+					// Move to the right side of the pin dialog (the coin/chest area)
+					java.awt.Rectangle bounds = pinWidget.getBounds();
+					if (bounds != null) {
+						return new java.awt.Point(bounds.x + bounds.width - 20, bounds.y + bounds.height / 2);
+					}
+				}
+				return null;
+			});
+			if (neutralPoint != null) {
+				mouseMovement.moveMouse(neutralPoint, profile);
+			}
+			sleep(300 + (int)(Math.random() * 200)); // Pin interface has a delay between digits
+		}
+
+		log.info("Bank pin entered successfully");
+		return true;
+	}
+
 	private Point getMinimapPoint(WorldPoint worldPoint) {
 		net.runelite.api.coords.LocalPoint localPoint =
 			net.runelite.api.coords.LocalPoint.fromWorld(client, worldPoint);
@@ -3409,11 +3732,14 @@ public class InteractionPlugin extends Plugin {
 	 * Automatically opens the prayer tab first.
 	 */
 	public boolean togglePrayer(String prayerName, MouseMovementProfile profile) {
+		// Normalize the prayer name: "Thick Skin" -> "THICK_SKIN", "THICK_SKIN" stays as is
+		String enumName = prayerName.trim().toUpperCase().replace(' ', '_');
+
 		// Validate the prayer name
 		try {
-			net.runelite.api.Prayer.valueOf(prayerName.toUpperCase());
+			net.runelite.api.Prayer.valueOf(enumName);
 		} catch (IllegalArgumentException e) {
-			log.warn("Unknown prayer: {}", prayerName);
+			log.warn("Unknown prayer: {} (normalized: {})", prayerName, enumName);
 			return false;
 		}
 
@@ -3422,10 +3748,10 @@ public class InteractionPlugin extends Plugin {
 			log.warn("Could not open prayer tab");
 			return false;
 		}
-		sleep(150 + (int)(Math.random() * 150));
+		sleep(300 + (int)(Math.random() * 200));
 
-		// Convert enum name to display name: PROTECT_FROM_MELEE -> "Protect from Melee"
-		String displayName = prayerNameToDisplay(prayerName);
+		// Convert enum name to display name: THICK_SKIN -> "Thick Skin"
+		String displayName = prayerNameToDisplay(enumName);
 
 		// Search prayer widgets by name — children 9-38 of prayerbook group
 		int groupId = 0x021d; // InterfaceID.Prayerbook group
@@ -3682,9 +4008,38 @@ public class InteractionPlugin extends Plugin {
 			java.util.Map<String, Object> state = new java.util.LinkedHashMap<>();
 			state.put("attackStyle", client.getVarpValue(net.runelite.api.VarPlayer.ATTACK_STYLE));
 			state.put("weaponType", client.getVarbitValue(net.runelite.api.Varbits.EQUIPPED_WEAPON_TYPE));
-			state.put("autoRetaliate", client.getVarpValue(172)); // VarPlayer 172 = auto-retaliate
+			state.put("autoRetaliate", client.getVarpValue(172) == 0); // 0 = on, 1 = off
 			state.put("specialAttackPercent", client.getVarpValue(net.runelite.api.VarPlayer.SPECIAL_ATTACK_PERCENT) / 10);
 			state.put("specialAttackEnabled", client.getVarpValue(net.runelite.api.VarPlayer.SPECIAL_ATTACK_ENABLED) == 1);
+
+			// Enhanced fields
+			state.put("health", client.getBoostedSkillLevel(net.runelite.api.Skill.HITPOINTS));
+			state.put("maxHealth", client.getRealSkillLevel(net.runelite.api.Skill.HITPOINTS));
+			state.put("prayer", client.getBoostedSkillLevel(net.runelite.api.Skill.PRAYER));
+			state.put("maxPrayer", client.getRealSkillLevel(net.runelite.api.Skill.PRAYER));
+
+			int poisonVal = client.getVarpValue(net.runelite.api.VarPlayer.POISON);
+			state.put("poisonStatus", poisonVal);
+			if (poisonVal >= 1000000) state.put("poisonType", "venom");
+			else if (poisonVal > 0) state.put("poisonType", "poison");
+			else if (poisonVal < -38) state.put("poisonType", "venom_immune");
+			else if (poisonVal < 0) state.put("poisonType", "poison_immune");
+			else state.put("poisonType", "none");
+
+			net.runelite.api.Player localPlayer = client.getLocalPlayer();
+			if (localPlayer != null) {
+				state.put("isDead", localPlayer.isDead());
+				net.runelite.api.Actor target = localPlayer.getInteracting();
+				if (target != null) {
+					state.put("inCombat", true);
+					state.put("targetName", target.getName());
+					state.put("targetHealth", target.getHealthRatio());
+					state.put("targetMaxHealth", target.getHealthScale());
+				} else {
+					state.put("inCombat", false);
+				}
+			}
+
 			return state;
 		});
 	}
@@ -3773,6 +4128,12 @@ public class InteractionPlugin extends Plugin {
 
 	public AntiBanService getAntiBanService() {
 		return antiBanService;
+	}
+
+	// ===== BREAK HANDLER =====
+
+	public BreakHandler getBreakHandler() {
+		return breakHandler;
 	}
 
 	// ===== IDLE TICK MANAGEMENT =====
@@ -4647,5 +5008,543 @@ public class InteractionPlugin extends Plugin {
 		WorldPoint playerPos = runOnClientThread(() -> client.getLocalPlayer().getWorldLocation());
 		if (playerPos == null) return false;
 		return clickMinimap(playerPos.getX() + dx, playerPos.getY() + dy, playerPos.getPlane(), profile);
+	}
+
+	// ===== GRAND EXCHANGE INTERACTION =====
+
+	/**
+	 * Check if the Grand Exchange interface is open.
+	 */
+	public boolean isGrandExchangeOpen() {
+		return runOnClientThread(() -> {
+			Widget geWidget = client.getWidget(InterfaceID.GE_OFFERS, 0);
+			return geWidget != null && !geWidget.isHidden();
+		});
+	}
+
+	/**
+	 * Get all 8 GE offer slot states using the RuneLite API.
+	 */
+	public java.util.List<java.util.Map<String, Object>> getGrandExchangeOffers() {
+		return runOnClientThread(() -> {
+			java.util.List<java.util.Map<String, Object>> offers = new java.util.ArrayList<>();
+			net.runelite.api.GrandExchangeOffer[] geOffers = client.getGrandExchangeOffers();
+			if (geOffers == null) return offers;
+
+			for (int i = 0; i < geOffers.length; i++) {
+				net.runelite.api.GrandExchangeOffer offer = geOffers[i];
+				java.util.Map<String, Object> offerMap = new java.util.LinkedHashMap<>();
+				offerMap.put("slot", i);
+				if (offer == null) {
+					offerMap.put("state", "EMPTY");
+				} else {
+					offerMap.put("state", offer.getState().name());
+					offerMap.put("itemId", offer.getItemId());
+					if (offer.getItemId() > 0) {
+						try {
+							offerMap.put("itemName", client.getItemDefinition(offer.getItemId()).getName());
+						} catch (Exception e) {
+							offerMap.put("itemName", "Unknown");
+						}
+					}
+					offerMap.put("price", offer.getPrice());
+					offerMap.put("totalQuantity", offer.getTotalQuantity());
+					offerMap.put("quantitySold", offer.getQuantitySold());
+					offerMap.put("spent", offer.getSpent());
+				}
+				offers.add(offerMap);
+			}
+			return offers;
+		});
+	}
+
+	/**
+	 * Click a GE offer slot (0-7) to select it.
+	 */
+	public boolean clickGrandExchangeSlot(int slot, MouseMovementProfile profile) {
+		if (slot < 0 || slot > 7) {
+			log.warn("Invalid GE slot: {}", slot);
+			return false;
+		}
+		// INDEX_0 through INDEX_7
+		int packedId = InterfaceID.GeOffers.INDEX_0 + slot;
+		return clickWidgetByPackedId(packedId, profile);
+	}
+
+	/**
+	 * Click the "Buy" button in the GE setup panel.
+	 * Must have a slot selected first (click an empty slot).
+	 */
+	public boolean clickGrandExchangeBuy(int slot, MouseMovementProfile profile) {
+		if (!isGrandExchangeOpen()) {
+			log.warn("GE is not open");
+			return false;
+		}
+		// Click the slot first
+		if (!clickGrandExchangeSlot(slot, profile)) return false;
+		sleep(300 + (int)(Math.random() * 200));
+
+		// The buy button is the first child of the slot widget — look for "Buy" action
+		// In practice, clicking an empty slot opens the buy/sell choice
+		// The buy icon is a child widget with "Buy offer" or similar
+		// We need to find the buy button within the slot
+		int geGroup = InterfaceID.GE_OFFERS;
+		java.awt.Point buyPoint = runOnClientThread(() -> {
+			// The buy button is at known position within each slot
+			// Each slot has a buy and sell button as children
+			// Slot widgets are INDEX_0 + slot, buy button is typically child 0
+			Widget slotWidget = client.getWidget(geGroup, 7 + slot); // INDEX_0 = child 7
+			if (slotWidget == null) return null;
+
+			Widget[] children = slotWidget.getDynamicChildren();
+			if (children == null) children = slotWidget.getStaticChildren();
+			if (children != null) {
+				for (Widget child : children) {
+					if (child == null) continue;
+					String[] actions = child.getActions();
+					if (actions != null) {
+						for (String action : actions) {
+							if (action != null && action.toLowerCase().contains("buy")) {
+								return getWidgetClickPoint(child, profile);
+							}
+						}
+					}
+				}
+			}
+			// Fallback: right-click the slot and select "Create Buy offer"
+			return null;
+		});
+
+		if (buyPoint != null) {
+			mouseMovement.moveAndClick(buyPoint, profile);
+			return true;
+		}
+
+		// Fallback: right-click the slot and select buy
+		return rightClickWidgetAndSelect(InterfaceID.GeOffers.INDEX_0 + slot, "Buy offer", profile);
+	}
+
+	/**
+	 * Click the "Sell" button in the GE setup panel.
+	 */
+	public boolean clickGrandExchangeSell(int slot, MouseMovementProfile profile) {
+		if (!isGrandExchangeOpen()) {
+			log.warn("GE is not open");
+			return false;
+		}
+		if (!clickGrandExchangeSlot(slot, profile)) return false;
+		sleep(300 + (int)(Math.random() * 200));
+
+		int geGroup = InterfaceID.GE_OFFERS;
+		java.awt.Point sellPoint = runOnClientThread(() -> {
+			Widget slotWidget = client.getWidget(geGroup, 7 + slot);
+			if (slotWidget == null) return null;
+
+			Widget[] children = slotWidget.getDynamicChildren();
+			if (children == null) children = slotWidget.getStaticChildren();
+			if (children != null) {
+				for (Widget child : children) {
+					if (child == null) continue;
+					String[] actions = child.getActions();
+					if (actions != null) {
+						for (String action : actions) {
+							if (action != null && action.toLowerCase().contains("sell")) {
+								return getWidgetClickPoint(child, profile);
+							}
+						}
+					}
+				}
+			}
+			return null;
+		});
+
+		if (sellPoint != null) {
+			mouseMovement.moveAndClick(sellPoint, profile);
+			return true;
+		}
+
+		return rightClickWidgetAndSelect(InterfaceID.GeOffers.INDEX_0 + slot, "Sell offer", profile);
+	}
+
+	/**
+	 * Search for an item in the GE by name.
+	 * Must be in the buy setup screen.
+	 * Types the name, waits for results, then clicks the exact match from the search results list.
+	 */
+	public boolean searchGrandExchangeItem(String itemName, MouseMovementProfile profile) {
+		sleep(300 + (int)(Math.random() * 200));
+		typeText(itemName);
+		sleep(800 + (int)(Math.random() * 400));
+
+		// Search results are dynamic children of Chatbox.MES_LAYER_SCROLLCONTENTS
+		int searchResultsPackedId = InterfaceID.Chatbox.MES_LAYER_SCROLLCONTENTS;
+		int groupId = searchResultsPackedId >> 16;
+		int childId = searchResultsPackedId & 0xFFFF;
+
+		java.awt.Point matchPoint = runOnClientThread(() -> {
+			Widget resultsWidget = client.getWidget(groupId, childId);
+			if (resultsWidget == null || resultsWidget.isHidden()) {
+				log.warn("GE search results widget not found");
+				return null;
+			}
+
+			Widget[] children = resultsWidget.getDynamicChildren();
+			if (children == null || children.length == 0) {
+				log.warn("GE search results has no children");
+				return null;
+			}
+
+			// Search for exact name match first
+			for (Widget child : children) {
+				if (child == null || child.isHidden()) continue;
+				String text = child.getText();
+				if (text != null) {
+					String cleanText = text.replaceAll("<[^>]+>", "").trim();
+					if (cleanText.equalsIgnoreCase(itemName)) {
+						log.info("Found exact GE search match: '{}'", cleanText);
+						return getWidgetClickPoint(child, profile);
+					}
+				}
+				// Also check item name via itemId
+				int itemId = child.getItemId();
+				if (itemId > 0) {
+					String name = client.getItemDefinition(itemId).getName();
+					if (name != null && name.equalsIgnoreCase(itemName)) {
+						log.info("Found exact GE search match by itemId: '{}' (id={})", name, itemId);
+						return getWidgetClickPoint(child, profile);
+					}
+				}
+			}
+
+			// Log what we found for debugging
+			log.warn("No exact match for '{}' in GE search results. Found {} children:", itemName, children.length);
+			for (int i = 0; i < Math.min(children.length, 10); i++) {
+				Widget child = children[i];
+				if (child == null) continue;
+				String text = child.getText();
+				int itemId = child.getItemId();
+				String itemDefName = itemId > 0 ? client.getItemDefinition(itemId).getName() : null;
+				log.warn("  Result[{}]: text='{}', itemId={}, itemDefName='{}'", i, text, itemId, itemDefName);
+			}
+
+			return null;
+		});
+
+		if (matchPoint != null) {
+			mouseMovement.moveAndClick(matchPoint, profile);
+			sleep(300 + (int)(Math.random() * 200));
+			return true;
+		}
+
+		// Fallback: press Enter to select the first result
+		log.warn("Exact match not found for '{}', falling back to Enter (first result)", itemName);
+		pressEnter();
+		sleep(300 + (int)(Math.random() * 200));
+		return true;
+	}
+
+	/**
+	 * Overload without profile for backwards compatibility.
+	 */
+	public boolean searchGrandExchangeItem(String itemName) {
+		return searchGrandExchangeItem(itemName, MouseMovementProfile.NORMAL);
+	}
+
+	/**
+	 * Set the price in the GE offer setup.
+	 * Clicks the price input area, clears it, and types the new price.
+	 */
+	public boolean setGrandExchangePrice(int price, MouseMovementProfile profile) {
+		// Click the price area — it's within the SETUP section
+		int packedId = InterfaceID.GeOffers.SETUP_MARKETPRICE;
+		int groupId = packedId >> 16;
+		int childId = packedId & 0xFFFF;
+
+		// Right-click the price area and select "Enter price"
+		// Or click the price text to get the input dialog
+		java.awt.Point pricePoint = runOnClientThread(() -> {
+			Widget priceWidget = client.getWidget(groupId, childId);
+			if (priceWidget == null || priceWidget.isHidden()) return null;
+			return getWidgetClickPoint(priceWidget, profile);
+		});
+
+		if (pricePoint == null) {
+			log.warn("Could not find GE price widget");
+			return false;
+		}
+
+		mouseMovement.moveAndClick(pricePoint, profile);
+		sleep(300 + (int)(Math.random() * 200));
+
+		// Type the price
+		typeText(String.valueOf(price));
+		sleep(100 + (int)(Math.random() * 100));
+		pressEnter();
+		sleep(200 + (int)(Math.random() * 100));
+		return true;
+	}
+
+	/**
+	 * Set the quantity in the GE offer setup.
+	 */
+	public boolean setGrandExchangeQuantity(int quantity, MouseMovementProfile profile) {
+		// The quantity widget is in the SETUP area
+		// We need to click the quantity text to get an input dialog
+		int geGroup = InterfaceID.GE_OFFERS;
+		java.awt.Point qtyPoint = runOnClientThread(() -> {
+			// SETUP is child 0x1a = 26
+			Widget setupWidget = client.getWidget(geGroup, 26);
+			if (setupWidget == null || setupWidget.isHidden()) return null;
+
+			// Look for the quantity input area within setup children
+			Widget[] children = setupWidget.getStaticChildren();
+			if (children != null) {
+				for (Widget child : children) {
+					if (child == null) continue;
+					String[] actions = child.getActions();
+					if (actions != null) {
+						for (String action : actions) {
+							if (action != null && action.toLowerCase().contains("quantity")) {
+								return getWidgetClickPoint(child, profile);
+							}
+						}
+					}
+				}
+			}
+			return null;
+		});
+
+		if (qtyPoint != null) {
+			mouseMovement.moveAndClick(qtyPoint, profile);
+			sleep(300 + (int)(Math.random() * 200));
+			typeText(String.valueOf(quantity));
+			sleep(100 + (int)(Math.random() * 100));
+			pressEnter();
+			return true;
+		}
+
+		log.warn("Could not find GE quantity widget");
+		return false;
+	}
+
+	/**
+	 * Confirm the current GE offer.
+	 */
+	public boolean confirmGrandExchangeOffer(MouseMovementProfile profile) {
+		return clickWidgetByPackedId(InterfaceID.GeOffers.SETUP_CONFIRM, profile);
+	}
+
+	/**
+	 * Collect all completed GE offers.
+	 * Tries the COLLECTALL button first. If not visible, tries individual slot collect buttons.
+	 */
+	public boolean collectGrandExchangeOffers(MouseMovementProfile profile) {
+		// Try the main COLLECTALL button first
+		int packedId = InterfaceID.GeOffers.COLLECTALL;
+		int groupId = packedId >> 16;
+		int childId = packedId & 0xFFFF;
+
+		java.awt.Point collectPoint = runOnClientThread(() -> {
+			Widget widget = client.getWidget(groupId, childId);
+			if (widget != null && !widget.isHidden()) {
+				// Check dynamic children — the actual clickable button may be a child
+				Widget[] dynChildren = widget.getDynamicChildren();
+				if (dynChildren != null && dynChildren.length > 0) {
+					for (Widget child : dynChildren) {
+						if (child != null && !child.isHidden()) {
+							String[] actions = child.getActions();
+							if (actions != null) {
+								for (String action : actions) {
+									if (action != null && action.toLowerCase().contains("collect")) {
+										log.info("Found collect button as dynamic child: action='{}'", action);
+										return getWidgetClickPoint(child, profile);
+									}
+								}
+							}
+						}
+					}
+				}
+				// Check static children
+				Widget[] statChildren = widget.getStaticChildren();
+				if (statChildren != null && statChildren.length > 0) {
+					for (Widget child : statChildren) {
+						if (child != null && !child.isHidden()) {
+							String[] actions = child.getActions();
+							if (actions != null) {
+								for (String action : actions) {
+									if (action != null && action.toLowerCase().contains("collect")) {
+										log.info("Found collect button as static child: action='{}'", action);
+										return getWidgetClickPoint(child, profile);
+									}
+								}
+							}
+						}
+					}
+				}
+				// The widget itself might be clickable
+				String[] actions = widget.getActions();
+				if (actions != null) {
+					for (String action : actions) {
+						if (action != null && action.toLowerCase().contains("collect")) {
+							log.info("COLLECTALL widget is directly clickable: action='{}'", action);
+							return getWidgetClickPoint(widget, profile);
+						}
+					}
+				}
+				log.info("COLLECTALL widget found but no collect action. Clicking it anyway.");
+				return getWidgetClickPoint(widget, profile);
+			}
+			log.warn("COLLECTALL widget (group={}, child={}) not found or hidden", groupId, childId);
+
+			// Fallback: look for collect buttons on individual slots
+			// When viewing a specific slot, DETAILS_COLLECT is visible
+			Widget detailsCollect = client.getWidget(InterfaceID.GeOffers.DETAILS_COLLECT >> 16, InterfaceID.GeOffers.DETAILS_COLLECT & 0xFFFF);
+			if (detailsCollect != null && !detailsCollect.isHidden()) {
+				log.info("Using DETAILS_COLLECT widget as fallback");
+				return getWidgetClickPoint(detailsCollect, profile);
+			}
+
+			return null;
+		});
+
+		if (collectPoint == null) {
+			log.warn("Could not find any collect button in GE");
+			return false;
+		}
+
+		mouseMovement.moveAndClick(collectPoint, profile);
+		log.info("Clicked GE collect button");
+		return true;
+	}
+
+	/**
+	 * Abort a GE offer by right-clicking the slot and selecting "Abort offer".
+	 */
+	public boolean abortGrandExchangeOffer(int slot, MouseMovementProfile profile) {
+		if (slot < 0 || slot > 7) return false;
+		int packedId = InterfaceID.GeOffers.INDEX_0 + slot;
+
+		// Right-click the slot widget and select "Abort offer"
+		int groupId = packedId >> 16;
+		int childId = packedId & 0xFFFF;
+
+		java.awt.Point slotPoint = runOnClientThread(() -> {
+			Widget widget = client.getWidget(groupId, childId);
+			if (widget == null || widget.isHidden()) return null;
+			return getWidgetClickPoint(widget, profile);
+		});
+
+		if (slotPoint == null) return false;
+
+		return rightClickAndSelect(slotPoint.x, slotPoint.y, "Abort offer", null, profile);
+	}
+
+	/**
+	 * View the details/status of a specific GE slot by clicking it.
+	 */
+	public boolean viewGrandExchangeSlot(int slot, MouseMovementProfile profile) {
+		if (slot < 0 || slot > 7) return false;
+		int packedId = InterfaceID.GeOffers.INDEX_0 + slot;
+
+		// Left-click to view
+		int groupId = packedId >> 16;
+		int childId = packedId & 0xFFFF;
+
+		java.awt.Point point = runOnClientThread(() -> {
+			Widget widget = client.getWidget(groupId, childId);
+			if (widget == null || widget.isHidden()) return null;
+			return getWidgetClickPoint(widget, profile);
+		});
+
+		if (point == null) return false;
+		mouseMovement.moveAndClick(point, profile);
+		return true;
+	}
+
+	/**
+	 * Close the Grand Exchange interface.
+	 */
+	public boolean closeGrandExchange(MouseMovementProfile profile) {
+		java.awt.Point clickTarget = runOnClientThread(() -> {
+			Widget geFrame = client.getWidget(InterfaceID.GeOffers.FRAME);
+			if (geFrame == null || geFrame.isHidden()) {
+				log.warn("GE is not open (FRAME widget not found)");
+				return null;
+			}
+
+			// Search dynamic children for the close button (has "Close" action)
+			Widget[] children = geFrame.getDynamicChildren();
+			if (children != null) {
+				for (int i = children.length - 1; i >= 0; i--) {
+					Widget child = children[i];
+					if (child == null || child.isHidden()) continue;
+					String[] actions = child.getActions();
+					if (actions != null) {
+						for (String action : actions) {
+							if ("Close".equals(action)) {
+								log.info("Found GE close button at dynamic child {}", i);
+								return getWidgetClickPoint(child, profile);
+							}
+						}
+					}
+				}
+				// Fallback: try child 11 (standard OSRS close button index)
+				if (children.length > 11) {
+					Widget closeButton = children[11];
+					if (closeButton != null && !closeButton.isHidden()) {
+						log.info("Using GE close button at dynamic child 11 (fallback)");
+						return getWidgetClickPoint(closeButton, profile);
+					}
+				}
+			}
+
+			// Fallback: try static children
+			Widget[] staticChildren = geFrame.getStaticChildren();
+			if (staticChildren != null) {
+				for (int i = staticChildren.length - 1; i >= 0; i--) {
+					Widget child = staticChildren[i];
+					if (child == null || child.isHidden()) continue;
+					String[] actions = child.getActions();
+					if (actions != null) {
+						for (String action : actions) {
+							if ("Close".equals(action)) {
+								log.info("Found GE close button at static child {}", i);
+								return getWidgetClickPoint(child, profile);
+							}
+						}
+					}
+				}
+			}
+
+			log.warn("Could not find GE close button");
+			return null;
+		});
+		if (clickTarget == null) return false;
+		mouseMovement.moveAndClick(clickTarget, profile);
+		return true;
+	}
+
+	/**
+	 * Go back from the detail/setup view to the main GE overview.
+	 */
+	public boolean grandExchangeBack(MouseMovementProfile profile) {
+		return clickWidgetByPackedId(InterfaceID.GeOffers.BACK, profile);
+	}
+
+	/**
+	 * Right-click a packed widget ID and select a menu option.
+	 */
+	private boolean rightClickWidgetAndSelect(int packedId, String option, MouseMovementProfile profile) {
+		int groupId = packedId >> 16;
+		int childId = packedId & 0xFFFF;
+
+		java.awt.Point point = runOnClientThread(() -> {
+			Widget widget = client.getWidget(groupId, childId);
+			if (widget == null || widget.isHidden()) return null;
+			return getWidgetClickPoint(widget, profile);
+		});
+
+		if (point == null) return false;
+		return rightClickAndSelect(point.x, point.y, option, null, profile);
 	}
 }

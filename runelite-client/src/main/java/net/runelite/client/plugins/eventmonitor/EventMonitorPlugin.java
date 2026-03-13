@@ -206,6 +206,23 @@ public class EventMonitorPlugin extends Plugin {
     }
 
     @Subscribe
+    public void onGrandExchangeOfferChanged(net.runelite.api.events.GrandExchangeOfferChanged event) {
+        GameEventData data = new GameEventData();
+        data.put("slot", event.getSlot());
+        net.runelite.api.GrandExchangeOffer offer = event.getOffer();
+        if (offer != null) {
+            data.put("state", offer.getState().name());
+            data.put("itemId", offer.getItemId());
+            data.put("price", offer.getPrice());
+            data.put("totalQuantity", offer.getTotalQuantity());
+            data.put("quantitySold", offer.getQuantitySold());
+            data.put("spent", offer.getSpent());
+        }
+
+        broadcastEvent(new GameEvent("ge_offer_changed", System.currentTimeMillis(), data));
+    }
+
+    @Subscribe
     public void onPlayerSpawned(PlayerSpawned event) {
         GameEventData data = new GameEventData();
         data.put("player_name", event.getPlayer().getName());

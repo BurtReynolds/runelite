@@ -254,12 +254,17 @@ public class ApiServerPlugin extends Plugin {
         app.post("/api/v1/interaction/ground-item/click", this::handleClickGroundItem);
         app.post("/api/v1/interaction/ground-item/take", this::handleTakeGroundItem);
 
-        // Logout / World hop endpoints
+        // Logout / World hop / Login endpoints
         app.get("/api/v1/world/current", this::handleGetCurrentWorld);
         app.get("/api/v1/world/list", this::handleGetWorldList);
         app.get("/api/v1/player/login-state", this::handleGetLoginState);
         app.post("/api/v1/interaction/logout", this::handleLogout);
         app.post("/api/v1/interaction/hop-world", this::handleHopWorld);
+        app.post("/api/v1/interaction/login", this::handleLogin);
+
+        // Bank pin endpoints
+        app.get("/api/v1/bank-pin/status", this::handleGetBankPinStatus);
+        app.post("/api/v1/bank-pin/enter", this::handleEnterBankPin);
 
         // Chat endpoints
         app.get("/api/v1/chat/recent", this::handleGetRecentChat);
@@ -325,6 +330,31 @@ public class ApiServerPlugin extends Plugin {
 
         // Minimap click endpoints
         app.post("/api/v1/interaction/minimap/click", this::handleMinimapClick);
+
+        // Grand Exchange endpoints
+        app.get("/api/v1/ge/status", this::handleGetGEStatus);
+        app.get("/api/v1/ge/offers", this::handleGetGEOffers);
+        app.post("/api/v1/ge/buy", this::handleGEBuy);
+        app.post("/api/v1/ge/sell", this::handleGESell);
+        app.post("/api/v1/ge/collect", this::handleGECollect);
+        app.post("/api/v1/ge/abort", this::handleGEAbort);
+        app.post("/api/v1/ge/close", this::handleGEClose);
+        app.post("/api/v1/ge/back", this::handleGEBack);
+        app.post("/api/v1/ge/confirm", this::handleGEConfirm);
+        app.post("/api/v1/ge/price", this::handleGESetPrice);
+        app.post("/api/v1/ge/quantity", this::handleGESetQuantity);
+        app.post("/api/v1/ge/search", this::handleGESearch);
+
+        // Enhanced combat state endpoints
+        app.get("/api/v1/combat/state", this::handleGetCombatSnapshot);
+        app.get("/api/v1/combat/log", this::handleGetCombatLog);
+
+        // Break handler endpoints
+        app.post("/api/v1/break/start", this::handleBreakStart);
+        app.post("/api/v1/break/stop", this::handleBreakStop);
+        app.get("/api/v1/break/status", this::handleBreakStatus);
+        app.post("/api/v1/break/trigger", this::handleBreakTrigger);
+        app.post("/api/v1/break/skip", this::handleBreakSkip);
 
         // Root endpoint
         app.get("/", this::handleRoot);
@@ -450,6 +480,9 @@ public class ApiServerPlugin extends Plugin {
         endpoints.put("loginState", "GET /api/v1/player/login-state");
         endpoints.put("logout", "POST /api/v1/interaction/logout");
         endpoints.put("hopWorld", "POST /api/v1/interaction/hop-world {world}");
+        endpoints.put("login", "POST /api/v1/interaction/login {username, password}");
+        endpoints.put("bankPinStatus", "GET /api/v1/bank-pin/status");
+        endpoints.put("bankPinEnter", "POST /api/v1/bank-pin/enter {pin}");
 
         // Chat endpoints
         endpoints.put("chatRecent", "GET /api/v1/chat/recent?limit=50&type=GAMEMESSAGE");
@@ -484,6 +517,31 @@ public class ApiServerPlugin extends Plugin {
         // Idle management
         endpoints.put("idleState", "GET /api/v1/player/idle");
         endpoints.put("idleReset", "POST /api/v1/player/idle/reset");
+
+        // Grand Exchange endpoints
+        endpoints.put("geStatus", "GET /api/v1/ge/status");
+        endpoints.put("geOffers", "GET /api/v1/ge/offers");
+        endpoints.put("geBuy", "POST /api/v1/ge/buy {slot, item, quantity, price, profile?}");
+        endpoints.put("geSell", "POST /api/v1/ge/sell {slot, item, quantity, price, profile?}");
+        endpoints.put("geCollect", "POST /api/v1/ge/collect {profile?}");
+        endpoints.put("geAbort", "POST /api/v1/ge/abort {slot, profile?}");
+        endpoints.put("geClose", "POST /api/v1/ge/close {profile?}");
+        endpoints.put("geBack", "POST /api/v1/ge/back {profile?}");
+        endpoints.put("geConfirm", "POST /api/v1/ge/confirm {profile?}");
+        endpoints.put("geSetPrice", "POST /api/v1/ge/price {price, profile?}");
+        endpoints.put("geSetQuantity", "POST /api/v1/ge/quantity {quantity, profile?}");
+        endpoints.put("geSearch", "POST /api/v1/ge/search {item}");
+
+        // Enhanced combat state
+        endpoints.put("combatSnapshot", "GET /api/v1/combat/state");
+        endpoints.put("combatLog", "GET /api/v1/combat/log?limit=50");
+
+        // Break handler
+        endpoints.put("breakStart", "POST /api/v1/break/start {minBreakMs, maxBreakMs, minPlayMs, maxPlayMs, logoutDuringBreak?}");
+        endpoints.put("breakStop", "POST /api/v1/break/stop");
+        endpoints.put("breakStatus", "GET /api/v1/break/status");
+        endpoints.put("breakTrigger", "POST /api/v1/break/trigger");
+        endpoints.put("breakSkip", "POST /api/v1/break/skip");
 
         info.put("endpoints", endpoints);
         info.put("websocket", "ws://localhost:7070/ws/events");
@@ -1812,6 +1870,95 @@ public class ApiServerPlugin extends Plugin {
                     seq.clickMinimap(mmX, mmY, mmPlane);
                 }
                 return true;
+
+            // Grand Exchange steps
+            case "ge_click_slot":
+                seq.geClickSlot(((Number) params.get("slot")).intValue());
+                return true;
+            case "ge_buy":
+                seq.geBuy(((Number) params.get("slot")).intValue());
+                return true;
+            case "ge_sell":
+                seq.geSell(((Number) params.get("slot")).intValue());
+                return true;
+            case "ge_search":
+                seq.geSearch((String) params.get("item"));
+                return true;
+            case "ge_set_price":
+                seq.geSetPrice(((Number) params.get("price")).intValue());
+                return true;
+            case "ge_set_quantity":
+                seq.geSetQuantity(((Number) params.get("quantity")).intValue());
+                return true;
+            case "ge_confirm":
+                seq.geConfirm();
+                return true;
+            case "ge_collect":
+                seq.geCollect();
+                return true;
+            case "ge_abort":
+                seq.geAbort(((Number) params.get("slot")).intValue());
+                return true;
+            case "ge_close":
+                seq.geClose();
+                return true;
+            case "ge_back":
+                seq.geBack();
+                return true;
+
+            // Break check step
+            case "break_check":
+                seq.breakCheck();
+                return true;
+
+            // Enhanced combat waits
+            case "wait_until_prayer_above":
+                seq.waitUntilPrayerAbove(
+                    ((Number) params.get("threshold")).intValue(),
+                    params.containsKey("timeout") ? ((Number) params.get("timeout")).longValue() : 10000
+                );
+                return true;
+            case "wait_until_prayer_below":
+                seq.waitUntilPrayerBelow(
+                    ((Number) params.get("threshold")).intValue(),
+                    params.containsKey("timeout") ? ((Number) params.get("timeout")).longValue() : 10000
+                );
+                return true;
+            case "wait_until_special_above":
+                seq.waitUntilSpecialAbove(
+                    ((Number) params.get("threshold")).intValue(),
+                    params.containsKey("timeout") ? ((Number) params.get("timeout")).longValue() : 60000
+                );
+                return true;
+            case "wait_until_not_in_combat":
+                seq.waitUntilNotInCombat(
+                    params.containsKey("timeout") ? ((Number) params.get("timeout")).longValue() : 30000
+                );
+                return true;
+            case "wait_until_target_dead":
+                seq.waitUntilTargetDead(
+                    params.containsKey("timeout") ? ((Number) params.get("timeout")).longValue() : 30000
+                );
+                return true;
+
+            // Login / Bank pin steps
+            case "login":
+                seq.login((String) params.get("username"), (String) params.get("password"));
+                return true;
+            case "enter_bank_pin":
+                seq.enterBankPin((String) params.get("pin"));
+                return true;
+            case "wait_until_logged_in":
+                seq.waitUntilLoggedIn(
+                    params.containsKey("timeout") ? ((Number) params.get("timeout")).longValue() : 30000
+                );
+                return true;
+            case "wait_until_bank_pin_open":
+                seq.waitUntilBankPinOpen(
+                    params.containsKey("timeout") ? ((Number) params.get("timeout")).longValue() : 15000
+                );
+                return true;
+
             default:
                 return false;
         }
@@ -3098,6 +3245,348 @@ public class ApiServerPlugin extends Plugin {
                 return;
             }
             ctx.json(Map.of("success", success));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    // ===== GRAND EXCHANGE HANDLERS =====
+
+    private void handleGetGEStatus(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        Map<String, Object> status = new HashMap<>();
+        status.put("open", interactionPlugin.isGrandExchangeOpen());
+        status.put("offers", interactionPlugin.getGrandExchangeOffers());
+        ctx.json(status);
+    }
+
+    private void handleGetGEOffers(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        ctx.json(interactionPlugin.getGrandExchangeOffers());
+    }
+
+    @SuppressWarnings("unchecked")
+    private void handleGEBuy(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            Map<String, Object> body = ctx.bodyAsClass(Map.class);
+            int slot = ((Number) body.get("slot")).intValue();
+            String item = (String) body.get("item");
+            int quantity = ((Number) body.get("quantity")).intValue();
+            int price = ((Number) body.get("price")).intValue();
+            String profileName = (String) body.getOrDefault("profile", "NORMAL");
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+
+            // Click buy on the slot
+            boolean success = interactionPlugin.clickGrandExchangeBuy(slot, profile);
+            if (!success) {
+                ctx.json(Map.of("success", false, "error", "Failed to click buy on slot " + slot));
+                return;
+            }
+
+            // Search for the item
+            Thread.sleep(600 + (int)(Math.random() * 300));
+            interactionPlugin.searchGrandExchangeItem(item);
+
+            // Set quantity
+            Thread.sleep(400 + (int)(Math.random() * 200));
+            interactionPlugin.setGrandExchangeQuantity(quantity, profile);
+
+            // Set price
+            Thread.sleep(400 + (int)(Math.random() * 200));
+            interactionPlugin.setGrandExchangePrice(price, profile);
+
+            // Confirm
+            Thread.sleep(300 + (int)(Math.random() * 200));
+            success = interactionPlugin.confirmGrandExchangeOffer(profile);
+
+            ctx.json(Map.of("success", success, "slot", slot, "item", item, "quantity", quantity, "price", price));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void handleGESell(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            Map<String, Object> body = ctx.bodyAsClass(Map.class);
+            int slot = ((Number) body.get("slot")).intValue();
+            String item = (String) body.get("item");
+            int quantity = body.containsKey("quantity") ? ((Number) body.get("quantity")).intValue() : 0;
+            int price = body.containsKey("price") ? ((Number) body.get("price")).intValue() : 0;
+            String profileName = (String) body.getOrDefault("profile", "NORMAL");
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+
+            // Click sell on the slot
+            boolean success = interactionPlugin.clickGrandExchangeSell(slot, profile);
+            if (!success) {
+                ctx.json(Map.of("success", false, "error", "Failed to click sell on slot " + slot));
+                return;
+            }
+
+            // Click the item from inventory in the GE side panel
+            Thread.sleep(600 + (int)(Math.random() * 300));
+            // The item should be in the inventory panel on the side — click it by name
+            interactionPlugin.clickInventoryItem(item, profile);
+
+            // Set quantity if specified
+            if (quantity > 0) {
+                Thread.sleep(400 + (int)(Math.random() * 200));
+                interactionPlugin.setGrandExchangeQuantity(quantity, profile);
+            }
+
+            // Set price if specified
+            if (price > 0) {
+                Thread.sleep(400 + (int)(Math.random() * 200));
+                interactionPlugin.setGrandExchangePrice(price, profile);
+            }
+
+            // Confirm
+            Thread.sleep(300 + (int)(Math.random() * 200));
+            success = interactionPlugin.confirmGrandExchangeOffer(profile);
+
+            ctx.json(Map.of("success", success, "slot", slot, "item", item));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    private void handleGECollect(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            String profileName = "NORMAL";
+            try {
+                @SuppressWarnings("unchecked") Map<String, Object> body = ctx.bodyAsClass(Map.class);
+                profileName = (String) body.getOrDefault("profile", "NORMAL");
+            } catch (Exception ignored) {}
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+            boolean success = interactionPlugin.collectGrandExchangeOffers(profile);
+            ctx.json(Map.of("success", success));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Error: " + e.getMessage()));
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void handleGEAbort(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            Map<String, Object> body = ctx.bodyAsClass(Map.class);
+            int slot = ((Number) body.get("slot")).intValue();
+            String profileName = (String) body.getOrDefault("profile", "NORMAL");
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+            boolean success = interactionPlugin.abortGrandExchangeOffer(slot, profile);
+            ctx.json(Map.of("success", success, "slot", slot));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    private void handleGEClose(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        String profileName = "NORMAL";
+        try {
+            @SuppressWarnings("unchecked") Map<String, Object> body = ctx.bodyAsClass(Map.class);
+            profileName = (String) body.getOrDefault("profile", "NORMAL");
+        } catch (Exception ignored) {}
+        MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+        boolean success = interactionPlugin.closeGrandExchange(profile);
+        ctx.json(Map.of("success", success));
+    }
+
+    private void handleGEBack(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        String profileName = "NORMAL";
+        try {
+            @SuppressWarnings("unchecked") Map<String, Object> body = ctx.bodyAsClass(Map.class);
+            profileName = (String) body.getOrDefault("profile", "NORMAL");
+        } catch (Exception ignored) {}
+        MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+        boolean success = interactionPlugin.grandExchangeBack(profile);
+        ctx.json(Map.of("success", success));
+    }
+
+    private void handleGEConfirm(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        String profileName = "NORMAL";
+        try {
+            @SuppressWarnings("unchecked") Map<String, Object> body = ctx.bodyAsClass(Map.class);
+            profileName = (String) body.getOrDefault("profile", "NORMAL");
+        } catch (Exception ignored) {}
+        MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+        boolean success = interactionPlugin.confirmGrandExchangeOffer(profile);
+        ctx.json(Map.of("success", success));
+    }
+
+    @SuppressWarnings("unchecked")
+    private void handleGESetPrice(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            Map<String, Object> body = ctx.bodyAsClass(Map.class);
+            int price = ((Number) body.get("price")).intValue();
+            String profileName = (String) body.getOrDefault("profile", "NORMAL");
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+            boolean success = interactionPlugin.setGrandExchangePrice(price, profile);
+            ctx.json(Map.of("success", success, "price", price));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void handleGESetQuantity(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            Map<String, Object> body = ctx.bodyAsClass(Map.class);
+            int quantity = ((Number) body.get("quantity")).intValue();
+            String profileName = (String) body.getOrDefault("profile", "NORMAL");
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+            boolean success = interactionPlugin.setGrandExchangeQuantity(quantity, profile);
+            ctx.json(Map.of("success", success, "quantity", quantity));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void handleGESearch(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            Map<String, Object> body = ctx.bodyAsClass(Map.class);
+            String item = (String) body.get("item");
+            if (item == null || item.isEmpty()) {
+                ctx.status(400).json(createError("'item' is required"));
+                return;
+            }
+            boolean success = interactionPlugin.searchGrandExchangeItem(item);
+            ctx.json(Map.of("success", success, "item", item));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    // ===== ENHANCED COMBAT STATE HANDLERS =====
+
+    private void handleGetCombatSnapshot(Context ctx) {
+        if (gameStatePlugin == null) { ctx.status(503).json(createError("GameState plugin not loaded")); return; }
+        net.runelite.client.plugins.gamestate.CombatStateManager combatMgr = gameStatePlugin.getCombatStateManager();
+        if (combatMgr == null) { ctx.status(503).json(createError("Combat state manager not initialized")); return; }
+        ctx.json(combatMgr.getSnapshot().toMap());
+    }
+
+    private void handleGetCombatLog(Context ctx) {
+        if (gameStatePlugin == null) { ctx.status(503).json(createError("GameState plugin not loaded")); return; }
+        net.runelite.client.plugins.gamestate.CombatStateManager combatMgr = gameStatePlugin.getCombatStateManager();
+        if (combatMgr == null) { ctx.status(503).json(createError("Combat state manager not initialized")); return; }
+        String limitStr = ctx.queryParam("limit");
+        int limit = 50;
+        if (limitStr != null) {
+            try { limit = Integer.parseInt(limitStr); } catch (NumberFormatException ignored) {}
+        }
+        ctx.json(combatMgr.getCombatLog(limit));
+    }
+
+    // ===== BREAK HANDLER =====
+
+    @SuppressWarnings("unchecked")
+    private void handleBreakStart(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            Map<String, Object> body = ctx.bodyAsClass(Map.class);
+            int minBreakMs = ((Number) body.get("minBreakMs")).intValue();
+            int maxBreakMs = ((Number) body.get("maxBreakMs")).intValue();
+            int minPlayMs = ((Number) body.get("minPlayMs")).intValue();
+            int maxPlayMs = ((Number) body.get("maxPlayMs")).intValue();
+            boolean logoutDuringBreak = body.containsKey("logoutDuringBreak") ? (Boolean) body.get("logoutDuringBreak") : false;
+
+            interactionPlugin.getBreakHandler().start(minBreakMs, maxBreakMs, minPlayMs, maxPlayMs, logoutDuringBreak);
+            ctx.json(Map.of("success", true, "minBreakMs", minBreakMs, "maxBreakMs", maxBreakMs,
+                "minPlayMs", minPlayMs, "maxPlayMs", maxPlayMs, "logoutDuringBreak", logoutDuringBreak));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    private void handleBreakStop(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        interactionPlugin.getBreakHandler().stop();
+        ctx.json(Map.of("success", true));
+    }
+
+    private void handleBreakStatus(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        ctx.json(interactionPlugin.getBreakHandler().getStatus());
+    }
+
+    private void handleBreakTrigger(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        interactionPlugin.getBreakHandler().triggerBreakNow();
+        ctx.json(Map.of("success", true, "message", "Break triggered"));
+    }
+
+    private void handleBreakSkip(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        interactionPlugin.getBreakHandler().skipBreak();
+        ctx.json(Map.of("success", true, "message", "Break skip requested"));
+    }
+
+    // ===== LOGIN HANDLERS =====
+
+    @SuppressWarnings("unchecked")
+    private void handleLogin(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            Map<String, Object> body = new java.util.HashMap<>();
+            try { body = ctx.bodyAsClass(Map.class); } catch (Exception ignored) {}
+
+            String username = (String) body.get("username");
+            String password = (String) body.get("password");
+            String accountId = (String) body.getOrDefault("account", "default");
+
+            boolean success;
+            if (username != null && password != null) {
+                // Explicit credentials provided
+                success = interactionPlugin.login(username, password);
+            } else {
+                // Use stored credentials from .env
+                success = interactionPlugin.loginWithStoredCredentials(accountId);
+            }
+            ctx.json(Map.of("success", success, "account", accountId));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    // ===== BANK PIN HANDLERS =====
+
+    private void handleGetBankPinStatus(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        boolean open = interactionPlugin.isBankPinOpen();
+        ctx.json(Map.of("open", open));
+    }
+
+    @SuppressWarnings("unchecked")
+    private void handleEnterBankPin(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            Map<String, Object> body = new java.util.HashMap<>();
+            try { body = ctx.bodyAsClass(Map.class); } catch (Exception ignored) {}
+
+            String pin = (String) body.get("pin");
+            String accountId = (String) body.getOrDefault("account", "default");
+            String profileName = (String) body.getOrDefault("profile", "NORMAL");
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+
+            boolean success;
+            if (pin != null && pin.length() == 4) {
+                // Explicit pin provided
+                success = interactionPlugin.enterBankPin(pin, profile);
+            } else {
+                // Use stored pin from .env
+                success = interactionPlugin.enterStoredBankPin(accountId, profile);
+            }
+            ctx.json(Map.of("success", success, "account", accountId));
         } catch (Exception e) {
             ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
         }
