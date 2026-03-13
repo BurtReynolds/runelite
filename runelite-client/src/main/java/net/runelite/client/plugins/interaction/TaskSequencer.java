@@ -753,6 +753,221 @@ public class TaskSequencer {
 		return this;
 	}
 
+	// ===== Prayer Steps =====
+
+	public TaskSequencer togglePrayer(String prayer) {
+		steps.add(new TaskStep("togglePrayer(" + prayer + ")", () ->
+			interaction.togglePrayer(prayer, defaultProfile)));
+		return this;
+	}
+
+	public TaskSequencer toggleQuickPrayer() {
+		steps.add(new TaskStep("toggleQuickPrayer", () ->
+			interaction.toggleQuickPrayer(defaultProfile)));
+		return this;
+	}
+
+	// ===== Spellbook Steps =====
+
+	public TaskSequencer castSpell(String spell) {
+		steps.add(new TaskStep("castSpell(" + spell + ")", () ->
+			interaction.castSpellByName(spell, defaultProfile)));
+		return this;
+	}
+
+	public TaskSequencer castSpellOnItem(String spell, String item) {
+		steps.add(new TaskStep("castSpellOnItem(" + spell + ", " + item + ")", () ->
+			interaction.castSpellOnItem(spell, item, defaultProfile)));
+		return this;
+	}
+
+	// ===== Combat Steps =====
+
+	public TaskSequencer setCombatStyle(int style) {
+		steps.add(new TaskStep("setCombatStyle(" + style + ")", () ->
+			interaction.setCombatStyle(style, defaultProfile)));
+		return this;
+	}
+
+	public TaskSequencer toggleAutoRetaliate() {
+		steps.add(new TaskStep("toggleAutoRetaliate", () ->
+			interaction.toggleAutoRetaliate(defaultProfile)));
+		return this;
+	}
+
+	public TaskSequencer activateSpecialAttack() {
+		steps.add(new TaskStep("activateSpecialAttack", () ->
+			interaction.activateSpecialAttack(defaultProfile)));
+		return this;
+	}
+
+	// ===== Anti-Ban Steps =====
+
+	public TaskSequencer antiBanStart(int minIntervalMs, int maxIntervalMs) {
+		steps.add(new TaskStep("antiBanStart", () -> {
+			interaction.getAntiBanService().start(minIntervalMs, maxIntervalMs, true, null);
+			return true;
+		}));
+		return this;
+	}
+
+	public TaskSequencer antiBanStop() {
+		steps.add(new TaskStep("antiBanStop", () -> {
+			interaction.getAntiBanService().stop();
+			return true;
+		}));
+		return this;
+	}
+
+	// ===== Scripting Utility Steps =====
+
+	public TaskSequencer randomSleep(int minMs, int maxMs) {
+		steps.add(new TaskStep("randomSleep(" + minMs + "-" + maxMs + ")", () -> {
+			interaction.randomSleep(minMs, maxMs);
+			return true;
+		}));
+		return this;
+	}
+
+	public TaskSequencer resetIdle() {
+		steps.add(new TaskStep("resetIdle", () -> {
+			interaction.resetIdleTicks();
+			return true;
+		}));
+		return this;
+	}
+
+	// ===== Make Menu Steps =====
+
+	public TaskSequencer selectMakeOption(String optionName, int optionIndex) {
+		String desc = optionName != null ? "selectMakeOption(" + optionName + ")" : "selectMakeOption(#" + optionIndex + ")";
+		steps.add(new TaskStep(desc, () ->
+			interaction.selectMakeOption(optionName, optionIndex, defaultProfile)));
+		return this;
+	}
+
+	public TaskSequencer setMakeQuantity(int quantity) {
+		steps.add(new TaskStep("setMakeQuantity(" + quantity + ")", () ->
+			interaction.setMakeQuantity(quantity, defaultProfile)));
+		return this;
+	}
+
+	// ===== Shop Steps =====
+
+	public TaskSequencer clickShopItem(String itemName) {
+		steps.add(new TaskStep("clickShopItem(" + itemName + ")", () ->
+			interaction.clickShopItem(itemName, defaultProfile)));
+		return this;
+	}
+
+	public TaskSequencer rightClickShopItemAndSelect(String itemName, String option) {
+		steps.add(new TaskStep("rightClickShopItem(" + itemName + "," + option + ")", () ->
+			interaction.rightClickShopItemAndSelect(itemName, option, defaultProfile)));
+		return this;
+	}
+
+	public TaskSequencer clickShopInventoryItem(String itemName) {
+		steps.add(new TaskStep("clickShopInvItem(" + itemName + ")", () ->
+			interaction.clickShopInventoryItem(itemName, defaultProfile)));
+		return this;
+	}
+
+	public TaskSequencer rightClickShopInventoryItemAndSelect(String itemName, String option) {
+		steps.add(new TaskStep("rightClickShopInvItem(" + itemName + "," + option + ")", () ->
+			interaction.rightClickShopInventoryItemAndSelect(itemName, option, defaultProfile)));
+		return this;
+	}
+
+	public TaskSequencer setShopQuantity(int quantity) {
+		steps.add(new TaskStep("setShopQuantity(" + quantity + ")", () ->
+			interaction.setShopQuantity(quantity, defaultProfile)));
+		return this;
+	}
+
+	public TaskSequencer closeShop() {
+		steps.add(new TaskStep("closeShop", () ->
+			interaction.closeShop(defaultProfile)));
+		return this;
+	}
+
+	// ===== Use Item On Steps =====
+
+	public TaskSequencer useItemOnItem(String sourceItem, String targetItem) {
+		steps.add(new TaskStep("useItemOnItem(" + sourceItem + "," + targetItem + ")", () ->
+			interaction.useItemOnItem(sourceItem, targetItem, defaultProfile)));
+		return this;
+	}
+
+	public TaskSequencer useItemOnObject(String itemName, String objectName) {
+		steps.add(new TaskStep("useItemOnObject(" + itemName + "," + objectName + ")", () ->
+			interaction.useItemOnObject(itemName, objectName, defaultProfile)));
+		return this;
+	}
+
+	public TaskSequencer useItemOnNPC(String itemName, String npcName) {
+		steps.add(new TaskStep("useItemOnNPC(" + itemName + "," + npcName + ")", () ->
+			interaction.useItemOnNPC(itemName, npcName, defaultProfile)));
+		return this;
+	}
+
+	// ===== Deposit Box Steps =====
+
+	public TaskSequencer clickDepositBoxItem(String itemName) {
+		steps.add(new TaskStep("clickDepositBoxItem(" + itemName + ")", () ->
+			interaction.clickDepositBoxItem(itemName, defaultProfile)));
+		return this;
+	}
+
+	public TaskSequencer rightClickDepositBoxItemAndSelect(String itemName, String option) {
+		steps.add(new TaskStep("rightClickDepositBoxItem(" + itemName + "," + option + ")", () ->
+			interaction.rightClickDepositBoxItemAndSelect(itemName, option, defaultProfile)));
+		return this;
+	}
+
+	public TaskSequencer depositBoxDepositInventory() {
+		steps.add(new TaskStep("depositBoxDepositInventory", () ->
+			interaction.depositBoxDepositInventory(defaultProfile)));
+		return this;
+	}
+
+	public TaskSequencer depositBoxDepositEquipment() {
+		steps.add(new TaskStep("depositBoxDepositEquipment", () ->
+			interaction.depositBoxDepositEquipment(defaultProfile)));
+		return this;
+	}
+
+	public TaskSequencer depositBoxDepositLoot() {
+		steps.add(new TaskStep("depositBoxDepositLoot", () ->
+			interaction.depositBoxDepositLootingBag(defaultProfile)));
+		return this;
+	}
+
+	public TaskSequencer setDepositBoxQuantity(int quantity) {
+		steps.add(new TaskStep("setDepositBoxQuantity(" + quantity + ")", () ->
+			interaction.setDepositBoxQuantity(quantity, defaultProfile)));
+		return this;
+	}
+
+	public TaskSequencer closeDepositBox() {
+		steps.add(new TaskStep("closeDepositBox", () ->
+			interaction.closeDepositBox(defaultProfile)));
+		return this;
+	}
+
+	// ===== Minimap Steps =====
+
+	public TaskSequencer clickMinimap(int worldX, int worldY, int plane) {
+		steps.add(new TaskStep("clickMinimap(" + worldX + "," + worldY + "," + plane + ")", () ->
+			interaction.clickMinimap(worldX, worldY, plane, defaultProfile)));
+		return this;
+	}
+
+	public TaskSequencer clickMinimapRelative(int dx, int dy) {
+		steps.add(new TaskStep("clickMinimapRelative(" + dx + "," + dy + ")", () ->
+			interaction.clickMinimapRelative(dx, dy, defaultProfile)));
+		return this;
+	}
+
 	// ===== Custom Steps =====
 
 	public TaskSequencer custom(String description, BooleanSupplier action) {

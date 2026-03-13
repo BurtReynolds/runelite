@@ -66,6 +66,7 @@ public class InteractionPlugin extends Plugin {
 	private GameStatePlugin gameStatePlugin;
 	private WebWalker webWalker;
 	private VirtualMouseOverlay virtualMouseOverlay;
+	private AntiBanService antiBanService;
 
 	@Override
 	protected void startUp() throws Exception {
@@ -93,10 +94,17 @@ public class InteractionPlugin extends Plugin {
 		virtualMouseOverlay = new VirtualMouseOverlay(mouseMovement);
 		overlayManager.add(virtualMouseOverlay);
 		log.info("Virtual mouse cursor overlay enabled");
+
+		// Initialize anti-ban service
+		antiBanService = new AntiBanService(this, client, mouseMovement);
+		log.info("Anti-ban service initialized");
 	}
 
 	@Override
 	protected void shutDown() throws Exception {
+		if (antiBanService != null) {
+			antiBanService.stop();
+		}
 		if (virtualMouseOverlay != null) {
 			overlayManager.remove(virtualMouseOverlay);
 		}
@@ -1466,19 +1474,38 @@ public class InteractionPlugin extends Plugin {
 			String searchOption = optionText.toLowerCase();
 			String searchTarget = targetText != null ? targetText.toLowerCase() : null;
 
+			// First pass: look for exact option match
 			int matchIndex = -1;
 			for (int i = 0; i < entries.length; i++) {
 				MenuEntry entry = entries[i];
 				String entryOption = stripTags(entry.getOption()).toLowerCase();
 				String entryTarget = stripTags(entry.getTarget()).toLowerCase();
 
-				boolean optionMatch = entryOption.contains(searchOption);
+				boolean optionMatch = entryOption.equals(searchOption);
 				boolean targetMatch = searchTarget == null || entryTarget.contains(searchTarget);
 
 				if (optionMatch && targetMatch) {
 					matchIndex = i;
-					log.debug("Found menu match at index {}: '{}' -> '{}'", i, entry.getOption(), entry.getTarget());
+					log.debug("Found exact menu match at index {}: '{}' -> '{}'", i, entry.getOption(), entry.getTarget());
 					break;
+				}
+			}
+
+			// Second pass: fall back to substring match if no exact match
+			if (matchIndex < 0) {
+				for (int i = 0; i < entries.length; i++) {
+					MenuEntry entry = entries[i];
+					String entryOption = stripTags(entry.getOption()).toLowerCase();
+					String entryTarget = stripTags(entry.getTarget()).toLowerCase();
+
+					boolean optionMatch = entryOption.contains(searchOption);
+					boolean targetMatch = searchTarget == null || entryTarget.contains(searchTarget);
+
+					if (optionMatch && targetMatch) {
+						matchIndex = i;
+						log.debug("Found substring menu match at index {}: '{}' -> '{}'", i, entry.getOption(), entry.getTarget());
+						break;
+					}
 				}
 			}
 
@@ -1844,6 +1871,25 @@ public class InteractionPlugin extends Plugin {
 			Widget widget = client.getWidget(widgetInfo);
 			if (widget == null) {
 				log.warn("Widget {} not found", widgetInfo);
+				return null;
+			}
+			return getWidgetClickPoint(widget, profile);
+		});
+		if (clickTarget == null) return false;
+		mouseMovement.moveAndClick(clickTarget, profile);
+		return true;
+	}
+
+	/**
+	 * Click a widget by its packed ID (group << 16 | child).
+	 */
+	public boolean clickWidgetByPackedId(int packedId, MouseMovementProfile profile) {
+		int groupId = packedId >> 16;
+		int childId = packedId & 0xFFFF;
+		java.awt.Point clickTarget = runOnClientThread(() -> {
+			Widget widget = client.getWidget(groupId, childId);
+			if (widget == null || widget.isHidden()) {
+				log.warn("Widget {}.{} not found or hidden", groupId, childId);
 				return null;
 			}
 			return getWidgetClickPoint(widget, profile);
@@ -2566,7 +2612,7 @@ public class InteractionPlugin extends Plugin {
 
 	// ===== Helpers =====
 
-	private <T> T runOnClientThread(java.util.function.Supplier<T> supplier) {
+	<T> T runOnClientThread(java.util.function.Supplier<T> supplier) {
 		CompletableFuture<T> future = new CompletableFuture<>();
 
 		clientThread.invoke(() -> {
@@ -3356,11 +3402,1250 @@ public class InteractionPlugin extends Plugin {
 		return null;
 	}
 
+	// ===== PRAYER BY NAME =====
+
+	/**
+	 * Toggle a prayer by its enum name (e.g., "PROTECT_FROM_MELEE", "PIETY", "RIGOUR").
+	 * Automatically opens the prayer tab first.
+	 */
+	public boolean togglePrayer(String prayerName, MouseMovementProfile profile) {
+		// Validate the prayer name
+		try {
+			net.runelite.api.Prayer.valueOf(prayerName.toUpperCase());
+		} catch (IllegalArgumentException e) {
+			log.warn("Unknown prayer: {}", prayerName);
+			return false;
+		}
+
+		// Open prayer tab
+		if (!openPlayerTab(PlayerTab.PRAYER, profile)) {
+			log.warn("Could not open prayer tab");
+			return false;
+		}
+		sleep(150 + (int)(Math.random() * 150));
+
+		// Convert enum name to display name: PROTECT_FROM_MELEE -> "Protect from Melee"
+		String displayName = prayerNameToDisplay(prayerName);
+
+		// Search prayer widgets by name — children 9-38 of prayerbook group
+		int groupId = 0x021d; // InterfaceID.Prayerbook group
+		java.awt.Point clickTarget = runOnClientThread(() -> {
+			for (int child = 9; child <= 38; child++) {
+				net.runelite.api.widgets.Widget widget = client.getWidget(groupId, child);
+				if (widget == null || widget.isHidden()) continue;
+				String name = widget.getName();
+				if (name != null) {
+					// Widget names may contain tags like <col=ff981f>Protect from Melee</col>
+					String cleanName = name.replaceAll("<[^>]+>", "").trim();
+					if (cleanName.equalsIgnoreCase(displayName)) {
+						log.info("Found prayer '{}' at widget {}.{}", displayName, groupId, child);
+						return getWidgetClickPoint(widget, profile);
+					}
+				}
+			}
+			log.warn("Prayer widget not found for '{}'", displayName);
+			return null;
+		});
+
+		if (clickTarget == null) return false;
+		mouseMovement.moveAndClick(clickTarget, profile);
+		return true;
+	}
+
+	private String prayerNameToDisplay(String enumName) {
+		// PROTECT_FROM_MELEE -> Protect from Melee
+		// RP_ANCIENT_STRENGTH -> Ancient Strength (strip RP_ prefix)
+		String name = enumName.toUpperCase();
+		if (name.startsWith("RP_")) {
+			name = name.substring(3);
+		}
+		String[] words = name.toLowerCase().split("_");
+		StringBuilder sb = new StringBuilder();
+		for (int i = 0; i < words.length; i++) {
+			if (i > 0) sb.append(" ");
+			// Capitalize first letter, keep small words lowercase for "from", "of" etc
+			String word = words[i];
+			if (word.equals("from") || word.equals("of")) {
+				sb.append(word);
+			} else {
+				sb.append(Character.toUpperCase(word.charAt(0))).append(word.substring(1));
+			}
+		}
+		return sb.toString();
+	}
+
+	/**
+	 * Check if a prayer is currently active.
+	 */
+	public boolean isPrayerActive(String prayerName) {
+		try {
+			net.runelite.api.Prayer prayer = net.runelite.api.Prayer.valueOf(prayerName.toUpperCase());
+			return runOnClientThread(() -> client.getVarbitValue(prayer.getVarbit()) == 1);
+		} catch (IllegalArgumentException e) {
+			log.warn("Unknown prayer: {}", prayerName);
+			return false;
+		}
+	}
+
+	/**
+	 * Get the state of all prayers.
+	 */
+	public java.util.Map<String, Object> getPrayerState() {
+		return runOnClientThread(() -> {
+			java.util.Map<String, Object> state = new java.util.LinkedHashMap<>();
+			java.util.List<String> activePrayers = new java.util.ArrayList<>();
+
+			for (net.runelite.api.Prayer prayer : net.runelite.api.Prayer.values()) {
+				if (client.getVarbitValue(prayer.getVarbit()) == 1) {
+					activePrayers.add(prayer.name());
+				}
+			}
+
+			state.put("activePrayers", activePrayers);
+			state.put("prayerPoints", client.getBoostedSkillLevel(net.runelite.api.Skill.PRAYER));
+			state.put("maxPrayer", client.getRealSkillLevel(net.runelite.api.Skill.PRAYER));
+			state.put("quickPrayerActive", client.getVarbitValue(net.runelite.api.gameval.VarbitID.QUICKPRAYER_ACTIVE) == 1);
+			return state;
+		});
+	}
+
+	/**
+	 * Toggle quick prayers on/off by clicking the quick prayer orb.
+	 */
+	public boolean toggleQuickPrayer(MouseMovementProfile profile) {
+		return clickWidgetByInfo(net.runelite.api.widgets.WidgetInfo.MINIMAP_QUICK_PRAYER_ORB, profile);
+	}
+
+	// ===== SPELLBOOK INTERACTION =====
+
+	/**
+	 * Cast a spell by clicking its widget in the spellbook.
+	 * Opens the magic tab first.
+	 * @param spellWidgetPackedId packed widget ID (e.g., InterfaceID.MagicSpellbook.VARROCK_TELEPORT)
+	 */
+	public boolean castSpell(int spellWidgetPackedId, MouseMovementProfile profile) {
+		if (!openPlayerTab(PlayerTab.MAGIC, profile)) {
+			log.warn("Could not open magic tab");
+			return false;
+		}
+		sleep(150 + (int)(Math.random() * 150));
+
+		int groupId = spellWidgetPackedId >> 16;
+		int childId = spellWidgetPackedId & 0xFFFF;
+
+		java.awt.Point clickTarget = runOnClientThread(() -> {
+			net.runelite.api.widgets.Widget spell = client.getWidget(groupId, childId);
+			if (spell == null || spell.isHidden()) {
+				log.warn("Spell widget {}.{} not found or hidden", groupId, childId);
+				return null;
+			}
+			return getWidgetClickPoint(spell, profile);
+		});
+		if (clickTarget == null) return false;
+		mouseMovement.moveAndClick(clickTarget, profile);
+		log.info("Cast spell widget {}.{}", groupId, childId);
+		return true;
+	}
+
+	/**
+	 * Cast a spell by name. Searches the spellbook widget children for a matching name.
+	 */
+	public boolean castSpellByName(String spellName, MouseMovementProfile profile) {
+		if (!openPlayerTab(PlayerTab.MAGIC, profile)) {
+			log.warn("Could not open magic tab");
+			return false;
+		}
+		sleep(150 + (int)(Math.random() * 150));
+
+		// Spellbook group is 218 (InterfaceID.MAGIC_SPELLBOOK)
+		int groupId = 218;
+		String searchName = spellName.toLowerCase().trim();
+
+		java.awt.Point clickTarget = runOnClientThread(() -> {
+			net.runelite.api.widgets.Widget spellbook = client.getWidget(groupId, 3); // SPELLLAYER
+			if (spellbook == null) {
+				log.warn("Spellbook widget not found");
+				return null;
+			}
+
+			// Search static children of the spellbook group for matching spell name
+			for (int childIdx = 4; childIdx < 200; childIdx++) {
+				net.runelite.api.widgets.Widget spell = client.getWidget(groupId, childIdx);
+				if (spell == null || spell.isHidden()) continue;
+				String name = spell.getName();
+				if (name != null && name.toLowerCase().contains(searchName)) {
+					log.info("Found spell '{}' at widget {}.{}", name, groupId, childIdx);
+					return getWidgetClickPoint(spell, profile);
+				}
+			}
+
+			log.warn("Spell '{}' not found in spellbook", spellName);
+			return null;
+		});
+		if (clickTarget == null) return false;
+		mouseMovement.moveAndClick(clickTarget, profile);
+		log.info("Cast spell: {}", spellName);
+		return true;
+	}
+
+	/**
+	 * Cast a spell on an inventory item (e.g., High Alchemy).
+	 * Clicks the spell first, then clicks the inventory item.
+	 */
+	public boolean castSpellOnItem(String spellName, String itemName, MouseMovementProfile profile) {
+		if (!castSpellByName(spellName, profile)) {
+			return false;
+		}
+		sleep(200 + (int)(Math.random() * 200));
+
+		// Now click the inventory item
+		if (!openPlayerTab(PlayerTab.INVENTORY, profile)) {
+			return false;
+		}
+		sleep(150 + (int)(Math.random() * 100));
+
+		return clickInventoryItem(itemName, profile);
+	}
+
+	/**
+	 * Get info about the current spellbook.
+	 */
+	public java.util.Map<String, Object> getSpellbookState() {
+		return runOnClientThread(() -> {
+			java.util.Map<String, Object> state = new java.util.LinkedHashMap<>();
+			// Spellbook varbit: 0=standard, 1=ancient, 2=lunar, 3=arceuus
+			int spellbookId = client.getVarbitValue(4070);
+			String[] names = {"standard", "ancient", "lunar", "arceuus"};
+			state.put("spellbook", spellbookId < names.length ? names[spellbookId] : "unknown");
+			state.put("spellbookId", spellbookId);
+			return state;
+		});
+	}
+
+	// ===== COMBAT STYLE / AUTOCAST =====
+
+	/**
+	 * Set combat style by index (0-3).
+	 * 0 = first style, 1 = second, 2 = third, 3 = fourth.
+	 */
+	public boolean setCombatStyle(int styleIndex, MouseMovementProfile profile) {
+		if (styleIndex < 0 || styleIndex > 3) {
+			log.warn("Invalid combat style index: {} (must be 0-3)", styleIndex);
+			return false;
+		}
+
+		if (!openPlayerTab(PlayerTab.COMBAT, profile)) {
+			log.warn("Could not open combat tab");
+			return false;
+		}
+		sleep(150 + (int)(Math.random() * 150));
+
+		net.runelite.api.widgets.WidgetInfo[] styles = {
+			net.runelite.api.widgets.WidgetInfo.COMBAT_STYLE_ONE,
+			net.runelite.api.widgets.WidgetInfo.COMBAT_STYLE_TWO,
+			net.runelite.api.widgets.WidgetInfo.COMBAT_STYLE_THREE,
+			net.runelite.api.widgets.WidgetInfo.COMBAT_STYLE_FOUR,
+		};
+
+		return clickWidgetByInfo(styles[styleIndex], profile);
+	}
+
+	/**
+	 * Toggle auto-retaliate.
+	 */
+	public boolean toggleAutoRetaliate(MouseMovementProfile profile) {
+		if (!openPlayerTab(PlayerTab.COMBAT, profile)) {
+			return false;
+		}
+		sleep(150 + (int)(Math.random() * 150));
+
+		// Retaliate widget
+		int packedId = net.runelite.api.gameval.InterfaceID.CombatInterface.RETALIATE;
+		int groupId = packedId >> 16;
+		int childId = packedId & 0xFFFF;
+
+		java.awt.Point clickTarget = runOnClientThread(() -> {
+			net.runelite.api.widgets.Widget widget = client.getWidget(groupId, childId);
+			if (widget == null || widget.isHidden()) return null;
+			return getWidgetClickPoint(widget, profile);
+		});
+		if (clickTarget == null) return false;
+		mouseMovement.moveAndClick(clickTarget, profile);
+		return true;
+	}
+
+	/**
+	 * Get current combat state.
+	 */
+	public java.util.Map<String, Object> getCombatState() {
+		return runOnClientThread(() -> {
+			java.util.Map<String, Object> state = new java.util.LinkedHashMap<>();
+			state.put("attackStyle", client.getVarpValue(net.runelite.api.VarPlayer.ATTACK_STYLE));
+			state.put("weaponType", client.getVarbitValue(net.runelite.api.Varbits.EQUIPPED_WEAPON_TYPE));
+			state.put("autoRetaliate", client.getVarpValue(172)); // VarPlayer 172 = auto-retaliate
+			state.put("specialAttackPercent", client.getVarpValue(net.runelite.api.VarPlayer.SPECIAL_ATTACK_PERCENT) / 10);
+			state.put("specialAttackEnabled", client.getVarpValue(net.runelite.api.VarPlayer.SPECIAL_ATTACK_ENABLED) == 1);
+			return state;
+		});
+	}
+
+	// ===== SPECIAL ATTACK =====
+
+	/**
+	 * Activate special attack by clicking the spec bar in the combat tab.
+	 */
+	public boolean activateSpecialAttack(MouseMovementProfile profile) {
+		if (!openPlayerTab(PlayerTab.COMBAT, profile)) {
+			return false;
+		}
+		sleep(150 + (int)(Math.random() * 150));
+
+		int packedId = net.runelite.api.gameval.InterfaceID.CombatInterface.SPECIAL_ATTACK;
+		int groupId = packedId >> 16;
+		int childId = packedId & 0xFFFF;
+
+		java.awt.Point clickTarget = runOnClientThread(() -> {
+			net.runelite.api.widgets.Widget widget = client.getWidget(groupId, childId);
+			if (widget == null || widget.isHidden()) {
+				// Try spec orb as fallback
+				net.runelite.api.widgets.Widget orb = client.getWidget(net.runelite.api.widgets.WidgetInfo.MINIMAP_SPEC_ORB);
+				if (orb == null || orb.isHidden()) return null;
+				return getWidgetClickPoint(orb, profile);
+			}
+			return getWidgetClickPoint(widget, profile);
+		});
+		if (clickTarget == null) return false;
+		mouseMovement.moveAndClick(clickTarget, profile);
+		log.info("Special attack activated");
+		return true;
+	}
+
+	/**
+	 * Get special attack state.
+	 */
+	public java.util.Map<String, Object> getSpecialAttackState() {
+		return runOnClientThread(() -> {
+			java.util.Map<String, Object> state = new java.util.LinkedHashMap<>();
+			state.put("percent", client.getVarpValue(net.runelite.api.VarPlayer.SPECIAL_ATTACK_PERCENT) / 10);
+			state.put("enabled", client.getVarpValue(net.runelite.api.VarPlayer.SPECIAL_ATTACK_ENABLED) == 1);
+			return state;
+		});
+	}
+
+	// ===== PLAYER INTERACTION =====
+
+	/**
+	 * Right-click a nearby player and select a menu option (e.g., "Lookup", "Trade", "Follow").
+	 */
+	public boolean rightClickPlayerAndSelect(String playerName, String action, MouseMovementProfile profile) {
+		java.awt.Point screenPoint = runOnClientThread(() -> {
+			for (net.runelite.api.Player p : client.getPlayers()) {
+				if (p == null || p.getName() == null) continue;
+				if (p.getName().equalsIgnoreCase(playerName)) {
+					net.runelite.api.coords.LocalPoint lp = p.getLocalLocation();
+					if (lp == null) return null;
+					Point sp = net.runelite.api.Perspective.localToCanvas(client, lp, client.getPlane(), p.getLogicalHeight() / 2);
+					return sp != null ? new java.awt.Point(sp.getX(), sp.getY()) : null;
+				}
+			}
+			return null;
+		});
+
+		if (screenPoint == null) {
+			log.warn("Player '{}' not found on screen", playerName);
+			return false;
+		}
+
+		int jitterX = (int) ((Math.random() - 0.5) * 10);
+		int jitterY = (int) ((Math.random() - 0.5) * 10);
+
+		return rightClickAndSelect(screenPoint.x + jitterX, screenPoint.y + jitterY, action, playerName, profile);
+	}
+
+	/**
+	 * Right-click a nearby NPC and select a menu option (e.g., "Examine", "Talk-to").
+	 */
+	public boolean rightClickNpcAndSelect(String npcName, String action, MouseMovementProfile profile) {
+		return interactWithNPC(npcName, action, profile);
+	}
+
+	// ===== ANTI-BAN =====
+
+	public AntiBanService getAntiBanService() {
+		return antiBanService;
+	}
+
+	// ===== IDLE TICK MANAGEMENT =====
+
+	/**
+	 * Get current idle tick counts.
+	 */
+	public java.util.Map<String, Object> getIdleState() {
+		return runOnClientThread(() -> {
+			java.util.Map<String, Object> state = new java.util.LinkedHashMap<>();
+			state.put("mouseIdleTicks", client.getMouseIdleTicks());
+			state.put("keyboardIdleTicks", client.getKeyboardIdleTicks());
+			state.put("idleTimeout", client.getIdleTimeout());
+			state.put("mouseLastPressedMs", client.getMouseLastPressedMillis());
+			return state;
+		});
+	}
+
+	/**
+	 * Reset idle ticks by dispatching a tiny mouse movement.
+	 */
+	public void resetIdleTicks() {
+		java.awt.Point pos = mouseMovement.getVirtualPosition();
+		// Tiny 1px nudge
+		int nx = Math.min(pos.x + 1, client.getCanvasWidth() - 1);
+		mouseMovement.moveMouse(new java.awt.Point(nx, pos.y), MouseMovementProfile.FAST);
+		log.info("Idle ticks reset via mouse nudge");
+	}
+
+	// ===== SCRIPTING UTILITIES =====
+
+	/**
+	 * Sleep for a random duration with a weighted distribution (more likely near the middle).
+	 */
+	public void randomSleep(int minMs, int maxMs) {
+		// Gaussian-ish distribution centered between min and max
+		double mean = (minMs + maxMs) / 2.0;
+		double stddev = (maxMs - minMs) / 4.0;
+		int sleepMs = (int) (mean + new java.util.Random().nextGaussian() * stddev);
+		sleepMs = Math.max(minMs, Math.min(maxMs, sleepMs));
+		sleep(sleepMs);
+	}
+
 	private void sleep(int ms) {
 		try {
 			Thread.sleep(ms);
 		} catch (InterruptedException e) {
 			Thread.currentThread().interrupt();
 		}
+	}
+
+	// ===== MAKE / CRAFTING MENU =====
+
+	/**
+	 * Widget IDs for Skillmulti item slots (A through R = up to 18 items).
+	 */
+	private static final int[] SKILLMULTI_ITEM_WIDGETS = {
+		InterfaceID.Skillmulti.A, InterfaceID.Skillmulti.B, InterfaceID.Skillmulti.C,
+		InterfaceID.Skillmulti.D, InterfaceID.Skillmulti.E, InterfaceID.Skillmulti.F,
+		InterfaceID.Skillmulti.G, InterfaceID.Skillmulti.H, InterfaceID.Skillmulti.I,
+		InterfaceID.Skillmulti.J, InterfaceID.Skillmulti.K, InterfaceID.Skillmulti.L,
+		InterfaceID.Skillmulti.M, InterfaceID.Skillmulti.N, InterfaceID.Skillmulti.O,
+		InterfaceID.Skillmulti.P, InterfaceID.Skillmulti.Q, InterfaceID.Skillmulti.R,
+	};
+
+	/**
+	 * Get the status and options of any open make/crafting menu.
+	 * Checks Skillmulti (modern make-X), Chatmenu (text options), and GraphicalMulti.
+	 */
+	public java.util.Map<String, Object> getMakeMenuStatus() {
+		return runOnClientThread(() -> {
+			java.util.Map<String, Object> result = new java.util.LinkedHashMap<>();
+
+			// Check Skillmulti (the modern make-X interface)
+			Widget skillmultiBottom = client.getWidget(InterfaceID.Skillmulti.BOTTOM);
+			if (skillmultiBottom != null && !skillmultiBottom.isHidden()) {
+				result.put("open", true);
+				result.put("type", "skillmulti");
+
+				// Get title
+				Widget titleWidget = client.getWidget(InterfaceID.Skillmulti.TITLE);
+				if (titleWidget != null && titleWidget.getText() != null) {
+					result.put("title", stripTags(titleWidget.getText()));
+				}
+
+				// Get available items
+				java.util.List<java.util.Map<String, Object>> options = new java.util.ArrayList<>();
+				for (int i = 0; i < SKILLMULTI_ITEM_WIDGETS.length; i++) {
+					int packedId = SKILLMULTI_ITEM_WIDGETS[i];
+					int groupId = packedId >> 16;
+					int childId = packedId & 0xFFFF;
+					Widget itemWidget = client.getWidget(groupId, childId);
+					if (itemWidget == null || itemWidget.isHidden()) continue;
+
+					// The item widget has children: child 0 = icon, child with text = name
+					String name = null;
+					Widget[] children = itemWidget.getDynamicChildren();
+					if (children != null) {
+						for (Widget child : children) {
+							if (child != null && child.getText() != null && !child.getText().isEmpty()) {
+								name = stripTags(child.getText());
+								break;
+							}
+						}
+					}
+					// Also check static children
+					if (name == null) {
+						Widget[] staticChildren = itemWidget.getStaticChildren();
+						if (staticChildren != null) {
+							for (Widget child : staticChildren) {
+								if (child != null && child.getText() != null && !child.getText().isEmpty()) {
+									name = stripTags(child.getText());
+									break;
+								}
+							}
+						}
+					}
+					// Fall back to widget name
+					if (name == null && itemWidget.getName() != null && !itemWidget.getName().isEmpty()) {
+						name = stripTags(itemWidget.getName());
+					}
+
+					if (name != null && !name.isEmpty()) {
+						java.util.Map<String, Object> opt = new java.util.LinkedHashMap<>();
+						opt.put("index", i);
+						opt.put("name", name);
+						options.add(opt);
+					}
+				}
+				result.put("options", options);
+				return result;
+			}
+
+			// Check Chatmenu (text dialog options)
+			Widget chatmenuOptions = client.getWidget(InterfaceID.Chatmenu.OPTIONS);
+			if (chatmenuOptions != null && !chatmenuOptions.isHidden()) {
+				java.util.List<Widget> textWidgets = getDialogOptionWidgets(chatmenuOptions);
+				if (!textWidgets.isEmpty()) {
+					result.put("open", true);
+					result.put("type", "chatmenu");
+					java.util.List<java.util.Map<String, Object>> options = new java.util.ArrayList<>();
+					for (int i = 0; i < textWidgets.size(); i++) {
+						Widget tw = textWidgets.get(i);
+						java.util.Map<String, Object> opt = new java.util.LinkedHashMap<>();
+						opt.put("index", i);
+						opt.put("name", stripTags(tw.getText()));
+						options.add(opt);
+					}
+					result.put("options", options);
+					return result;
+				}
+			}
+
+			// Check GraphicalMulti (old 2-choice dialog)
+			Widget gm2a = client.getWidget(InterfaceID.GraphicalMulti.GRAPHICAL_MULTI_2A);
+			Widget gm2b = client.getWidget(InterfaceID.GraphicalMulti.GRAPHICAL_MULTI_2B);
+			if (gm2a != null && !gm2a.isHidden() && gm2b != null && !gm2b.isHidden()) {
+				result.put("open", true);
+				result.put("type", "graphical_multi");
+				java.util.List<java.util.Map<String, Object>> options = new java.util.ArrayList<>();
+				String nameA = gm2a.getText() != null ? stripTags(gm2a.getText()) : "Option A";
+				String nameB = gm2b.getText() != null ? stripTags(gm2b.getText()) : "Option B";
+				options.add(java.util.Map.of("index", 0, "name", nameA));
+				options.add(java.util.Map.of("index", 1, "name", nameB));
+				result.put("options", options);
+				return result;
+			}
+
+			result.put("open", false);
+			return result;
+		});
+	}
+
+	/**
+	 * Select a make menu option by name (substring match) or by index.
+	 */
+	public boolean selectMakeOption(String optionName, int optionIndex, MouseMovementProfile profile) {
+		// First determine what type of make menu is open
+		java.util.Map<String, Object> status = getMakeMenuStatus();
+		if (!(Boolean) status.getOrDefault("open", false)) {
+			log.warn("No make menu is open");
+			return false;
+		}
+
+		String type = (String) status.get("type");
+
+		if ("chatmenu".equals(type)) {
+			// Use existing dialog selection
+			if (optionName != null) {
+				return selectDialogOption(optionName, profile);
+			} else {
+				@SuppressWarnings("unchecked")
+				java.util.List<java.util.Map<String, Object>> options =
+					(java.util.List<java.util.Map<String, Object>>) status.get("options");
+				if (optionIndex >= 0 && optionIndex < options.size()) {
+					return selectDialogOption((String) options.get(optionIndex).get("name"), profile);
+				}
+			}
+			return false;
+		}
+
+		if ("skillmulti".equals(type)) {
+			return selectSkillmultiOption(optionName, optionIndex, profile);
+		}
+
+		if ("graphical_multi".equals(type)) {
+			return selectGraphicalMultiOption(optionName, optionIndex, profile);
+		}
+
+		log.warn("Unknown make menu type: {}", type);
+		return false;
+	}
+
+	private boolean selectSkillmultiOption(String optionName, int optionIndex, MouseMovementProfile profile) {
+		java.awt.Point clickTarget = runOnClientThread(() -> {
+			// If searching by name, find the matching widget
+			if (optionName != null) {
+				String search = optionName.toLowerCase();
+				for (int packedId : SKILLMULTI_ITEM_WIDGETS) {
+					int groupId = packedId >> 16;
+					int childId = packedId & 0xFFFF;
+					Widget itemWidget = client.getWidget(groupId, childId);
+					if (itemWidget == null || itemWidget.isHidden()) continue;
+
+					String name = getSkillmultiItemName(itemWidget);
+					if (name != null && name.toLowerCase().contains(search)) {
+						log.info("Found skillmulti option '{}' matching '{}'", name, optionName);
+						return getWidgetClickPoint(itemWidget, profile);
+					}
+				}
+				log.warn("Skillmulti option '{}' not found", optionName);
+				return null;
+			}
+
+			// By index
+			if (optionIndex >= 0 && optionIndex < SKILLMULTI_ITEM_WIDGETS.length) {
+				int packedId = SKILLMULTI_ITEM_WIDGETS[optionIndex];
+				int groupId = packedId >> 16;
+				int childId = packedId & 0xFFFF;
+				Widget itemWidget = client.getWidget(groupId, childId);
+				if (itemWidget != null && !itemWidget.isHidden()) {
+					return getWidgetClickPoint(itemWidget, profile);
+				}
+			}
+			log.warn("Skillmulti option index {} not found", optionIndex);
+			return null;
+		});
+
+		if (clickTarget == null) return false;
+		mouseMovement.moveAndClick(clickTarget, profile);
+		return true;
+	}
+
+	private String getSkillmultiItemName(Widget itemWidget) {
+		// Check dynamic children for text
+		Widget[] children = itemWidget.getDynamicChildren();
+		if (children != null) {
+			for (Widget child : children) {
+				if (child != null && child.getText() != null && !child.getText().isEmpty()) {
+					return stripTags(child.getText());
+				}
+			}
+		}
+		// Check static children
+		Widget[] staticChildren = itemWidget.getStaticChildren();
+		if (staticChildren != null) {
+			for (Widget child : staticChildren) {
+				if (child != null && child.getText() != null && !child.getText().isEmpty()) {
+					return stripTags(child.getText());
+				}
+			}
+		}
+		// Fall back to widget name
+		if (itemWidget.getName() != null && !itemWidget.getName().isEmpty()) {
+			return stripTags(itemWidget.getName());
+		}
+		return null;
+	}
+
+	private boolean selectGraphicalMultiOption(String optionName, int optionIndex, MouseMovementProfile profile) {
+		int targetPackedId;
+		if (optionName != null) {
+			// Match by text
+			String search = optionName.toLowerCase();
+			Boolean matchA = runOnClientThread(() -> {
+				Widget w = client.getWidget(InterfaceID.GraphicalMulti.GRAPHICAL_MULTI_2A);
+				return w != null && !w.isHidden() && w.getText() != null
+					&& stripTags(w.getText()).toLowerCase().contains(search);
+			});
+			targetPackedId = Boolean.TRUE.equals(matchA)
+				? InterfaceID.GraphicalMulti.GRAPHICAL_MULTI_2A
+				: InterfaceID.GraphicalMulti.GRAPHICAL_MULTI_2B;
+		} else {
+			targetPackedId = optionIndex == 0
+				? InterfaceID.GraphicalMulti.GRAPHICAL_MULTI_2A
+				: InterfaceID.GraphicalMulti.GRAPHICAL_MULTI_2B;
+		}
+		return clickWidgetByPackedId(targetPackedId, profile);
+	}
+
+	/**
+	 * Set the make menu quantity (Skillmulti only).
+	 */
+	public boolean setMakeQuantity(int quantity, MouseMovementProfile profile) {
+		int widgetId;
+		switch (quantity) {
+			case 1:  widgetId = InterfaceID.Skillmulti._1; break;
+			case 5:  widgetId = InterfaceID.Skillmulti._5; break;
+			case 10: widgetId = InterfaceID.Skillmulti._10; break;
+			case -1: widgetId = InterfaceID.Skillmulti.X; break;
+			case 0:  widgetId = InterfaceID.Skillmulti.ALL; break;
+			default:
+				log.warn("Invalid make quantity: {} (use 1, 5, 10, -1=X, 0=All)", quantity);
+				return false;
+		}
+		return clickWidgetByPackedId(widgetId, profile);
+	}
+
+	// ===== SHOP INTERACTION =====
+
+	/**
+	 * Check if the shop interface is currently open.
+	 */
+	public boolean isShopOpen() {
+		return runOnClientThread(() -> {
+			Widget shopWidget = client.getWidget(InterfaceID.Shopmain.ITEMS);
+			return shopWidget != null && !shopWidget.isHidden();
+		});
+	}
+
+	/**
+	 * Get all items currently in the shop.
+	 */
+	public java.util.List<java.util.Map<String, Object>> getShopItems() {
+		return runOnClientThread(() -> {
+			java.util.List<java.util.Map<String, Object>> items = new java.util.ArrayList<>();
+			Widget shopWidget = client.getWidget(InterfaceID.Shopmain.ITEMS);
+			if (shopWidget == null || shopWidget.isHidden()) return items;
+
+			Widget[] children = shopWidget.getDynamicChildren();
+			if (children == null) return items;
+
+			for (int i = 0; i < children.length; i++) {
+				Widget child = children[i];
+				if (child == null || child.getItemId() <= 0) continue;
+				ItemComposition def = client.getItemDefinition(child.getItemId());
+				java.util.Map<String, Object> item = new java.util.LinkedHashMap<>();
+				item.put("slot", i);
+				item.put("id", child.getItemId());
+				item.put("name", def != null ? def.getName() : "Unknown");
+				item.put("quantity", child.getItemQuantity());
+				items.add(item);
+			}
+			return items;
+		});
+	}
+
+	/**
+	 * Click a shop item by name (left-click = buy default quantity).
+	 */
+	public boolean clickShopItem(String itemName, MouseMovementProfile profile) {
+		java.awt.Point clickTarget = runOnClientThread(() -> {
+			Widget shopWidget = client.getWidget(InterfaceID.Shopmain.ITEMS);
+			if (shopWidget == null || shopWidget.isHidden()) {
+				log.warn("Shop not open");
+				return null;
+			}
+
+			Widget[] children = shopWidget.getDynamicChildren();
+			if (children == null) return null;
+
+			for (Widget child : children) {
+				if (child == null || child.getItemId() <= 0) continue;
+				ItemComposition def = client.getItemDefinition(child.getItemId());
+				if (def != null && def.getName().toLowerCase().contains(itemName.toLowerCase())) {
+					log.info("Found shop item: {} (id={})", def.getName(), child.getItemId());
+					return getWidgetClickPoint(child, profile);
+				}
+			}
+
+			log.warn("Shop item '{}' not found", itemName);
+			return null;
+		});
+		if (clickTarget == null) return false;
+		mouseMovement.moveAndClick(clickTarget, profile);
+		return true;
+	}
+
+	/**
+	 * Right-click a shop item and select an option (e.g., "Buy 5", "Buy 10", "Buy 50", "Value").
+	 */
+	public boolean rightClickShopItemAndSelect(String itemName, String option, MouseMovementProfile profile) {
+		Point itemPoint = runOnClientThread(() -> {
+			Widget shopWidget = client.getWidget(InterfaceID.Shopmain.ITEMS);
+			if (shopWidget == null || shopWidget.isHidden()) {
+				log.warn("Shop not open");
+				return null;
+			}
+
+			Widget[] children = shopWidget.getDynamicChildren();
+			if (children == null) return null;
+
+			for (Widget child : children) {
+				if (child == null || child.getItemId() <= 0) continue;
+				ItemComposition def = client.getItemDefinition(child.getItemId());
+				if (def != null && def.getName().toLowerCase().contains(itemName.toLowerCase())) {
+					return getWidgetScreenPoint(child);
+				}
+			}
+
+			log.warn("Shop item '{}' not found", itemName);
+			return null;
+		});
+
+		if (itemPoint == null) return false;
+
+		int jitterX = (int) ((Math.random() - 0.5) * defaultJitter() * 2);
+		int jitterY = (int) ((Math.random() - 0.5) * defaultJitter() * 2);
+
+		return rightClickAndSelect(
+			itemPoint.getX() + jitterX,
+			itemPoint.getY() + jitterY,
+			option, itemName, profile
+		);
+	}
+
+	/**
+	 * Click a shop inventory item by name (left-click = sell default quantity).
+	 * Shop inventory is the player's inventory panel shown beside the shop.
+	 */
+	public boolean clickShopInventoryItem(String itemName, MouseMovementProfile profile) {
+		java.awt.Point clickTarget = runOnClientThread(() -> {
+			Widget shopInvWidget = client.getWidget(InterfaceID.Shopside.ITEMS);
+			if (shopInvWidget == null || shopInvWidget.isHidden()) {
+				log.warn("Shop inventory panel not open");
+				return null;
+			}
+
+			Widget[] children = shopInvWidget.getDynamicChildren();
+			if (children == null) return null;
+
+			for (Widget child : children) {
+				if (child == null || child.getItemId() <= 0) continue;
+				ItemComposition def = client.getItemDefinition(child.getItemId());
+				if (def != null && def.getName().toLowerCase().contains(itemName.toLowerCase())) {
+					log.info("Found shop inventory item: {}", def.getName());
+					return getWidgetClickPoint(child, profile);
+				}
+			}
+
+			log.warn("Shop inventory item '{}' not found", itemName);
+			return null;
+		});
+		if (clickTarget == null) return false;
+		mouseMovement.moveAndClick(clickTarget, profile);
+		return true;
+	}
+
+	/**
+	 * Right-click a shop inventory item and select an option (e.g., "Sell 1", "Sell 5", "Sell 10", "Sell 50", "Value").
+	 */
+	public boolean rightClickShopInventoryItemAndSelect(String itemName, String option, MouseMovementProfile profile) {
+		Point itemPoint = runOnClientThread(() -> {
+			Widget shopInvWidget = client.getWidget(InterfaceID.Shopside.ITEMS);
+			if (shopInvWidget == null || shopInvWidget.isHidden()) {
+				log.warn("Shop inventory panel not open");
+				return null;
+			}
+
+			Widget[] children = shopInvWidget.getDynamicChildren();
+			if (children == null) return null;
+
+			for (Widget child : children) {
+				if (child == null || child.getItemId() <= 0) continue;
+				ItemComposition def = client.getItemDefinition(child.getItemId());
+				if (def != null && def.getName().toLowerCase().contains(itemName.toLowerCase())) {
+					return getWidgetScreenPoint(child);
+				}
+			}
+
+			log.warn("Shop inventory item '{}' not found", itemName);
+			return null;
+		});
+
+		if (itemPoint == null) return false;
+
+		int jitterX = (int) ((Math.random() - 0.5) * defaultJitter() * 2);
+		int jitterY = (int) ((Math.random() - 0.5) * defaultJitter() * 2);
+
+		return rightClickAndSelect(
+			itemPoint.getX() + jitterX,
+			itemPoint.getY() + jitterY,
+			option, itemName, profile
+		);
+	}
+
+	/**
+	 * Set the shop quantity mode (1, 5, 10, 50).
+	 */
+	public boolean setShopQuantity(int quantity, MouseMovementProfile profile) {
+		int widgetId;
+		switch (quantity) {
+			case 1:  widgetId = InterfaceID.Shopmain.QUANTITY1; break;
+			case 5:  widgetId = InterfaceID.Shopmain.QUANTITY5; break;
+			case 10: widgetId = InterfaceID.Shopmain.QUANTITY10; break;
+			case 50: widgetId = InterfaceID.Shopmain.QUANTITY50; break;
+			default:
+				log.warn("Invalid shop quantity: {} (must be 1, 5, 10, or 50)", quantity);
+				return false;
+		}
+		return clickWidgetByPackedId(widgetId, profile);
+	}
+
+	/**
+	 * Close the shop interface by clicking the close button.
+	 */
+	public boolean closeShop(MouseMovementProfile profile) {
+		java.awt.Point clickTarget = runOnClientThread(() -> {
+			Widget frameWidget = client.getWidget(InterfaceID.Shopmain.FRAME);
+			if (frameWidget == null || frameWidget.isHidden()) {
+				log.warn("Shop frame not found");
+				return null;
+			}
+			// Close button is dynamic child 11 of the frame (same pattern as bank)
+			Widget[] children = frameWidget.getDynamicChildren();
+			if (children != null && children.length > 11) {
+				Widget closeBtn = children[11];
+				if (closeBtn != null && !closeBtn.isHidden()) {
+					return getWidgetClickPoint(closeBtn, profile);
+				}
+			}
+			// Fallback: try static children
+			Widget[] staticChildren = frameWidget.getStaticChildren();
+			if (staticChildren != null) {
+				for (Widget child : staticChildren) {
+					if (child != null && !child.isHidden()) {
+						String[] actions = child.getActions();
+						if (actions != null) {
+							for (String action : actions) {
+								if ("Close".equals(action)) {
+									return getWidgetClickPoint(child, profile);
+								}
+							}
+						}
+					}
+				}
+			}
+			log.warn("Shop close button not found");
+			return null;
+		});
+		if (clickTarget == null) return false;
+		mouseMovement.moveAndClick(clickTarget, profile);
+		return true;
+	}
+
+	// ===== USE ITEM ON ITEM / OBJECT / NPC =====
+
+	/**
+	 * Use one inventory item on another inventory item.
+	 * Right-clicks the first item, selects "Use", then clicks the second item.
+	 */
+	public boolean useItemOnItem(String sourceItem, String targetItem, MouseMovementProfile profile) {
+		// Step 1: Open inventory if needed
+		if (!openPlayerTab(PlayerTab.INVENTORY, profile)) {
+			log.warn("Could not open inventory tab");
+			return false;
+		}
+		sleep(100 + (int)(Math.random() * 100));
+
+		// Step 2: Right-click source item and select "Use"
+		if (!rightClickInventoryItemAndSelect(sourceItem, "Use", profile)) {
+			log.warn("Could not select 'Use' on '{}'", sourceItem);
+			return false;
+		}
+		sleep(150 + (int)(Math.random() * 150));
+
+		// Step 3: Click the target item
+		if (!clickInventoryItem(targetItem, profile)) {
+			log.warn("Could not click target item '{}'", targetItem);
+			return false;
+		}
+
+		log.info("Used '{}' on '{}'", sourceItem, targetItem);
+		return true;
+	}
+
+	/**
+	 * Use an inventory item on a game object.
+	 * Right-clicks the item, selects "Use", then clicks the game object.
+	 */
+	public boolean useItemOnObject(String itemName, String objectName, MouseMovementProfile profile) {
+		// Step 1: Open inventory if needed
+		if (!openPlayerTab(PlayerTab.INVENTORY, profile)) {
+			log.warn("Could not open inventory tab");
+			return false;
+		}
+		sleep(100 + (int)(Math.random() * 100));
+
+		// Step 2: Right-click item and select "Use"
+		if (!rightClickInventoryItemAndSelect(itemName, "Use", profile)) {
+			log.warn("Could not select 'Use' on '{}'", itemName);
+			return false;
+		}
+		sleep(150 + (int)(Math.random() * 150));
+
+		// Step 3: Click the game object
+		if (!interactWithObject(objectName, profile)) {
+			log.warn("Could not click object '{}'", objectName);
+			return false;
+		}
+
+		log.info("Used '{}' on object '{}'", itemName, objectName);
+		return true;
+	}
+
+	/**
+	 * Use an inventory item on an NPC.
+	 * Right-clicks the item, selects "Use", then clicks the NPC.
+	 */
+	public boolean useItemOnNPC(String itemName, String npcName, MouseMovementProfile profile) {
+		// Step 1: Open inventory if needed
+		if (!openPlayerTab(PlayerTab.INVENTORY, profile)) {
+			log.warn("Could not open inventory tab");
+			return false;
+		}
+		sleep(100 + (int)(Math.random() * 100));
+
+		// Step 2: Right-click item and select "Use"
+		if (!rightClickInventoryItemAndSelect(itemName, "Use", profile)) {
+			log.warn("Could not select 'Use' on '{}'", itemName);
+			return false;
+		}
+		sleep(150 + (int)(Math.random() * 150));
+
+		// Step 3: Click the NPC
+		if (!interactWithNPC(npcName, profile)) {
+			log.warn("Could not click NPC '{}'", npcName);
+			return false;
+		}
+
+		log.info("Used '{}' on NPC '{}'", itemName, npcName);
+		return true;
+	}
+
+	// ===== DEPOSIT BOX INTERACTION =====
+
+	/**
+	 * Check if the deposit box interface is currently open.
+	 */
+	public boolean isDepositBoxOpen() {
+		return runOnClientThread(() -> {
+			Widget dbWidget = client.getWidget(InterfaceID.BankDepositbox.CONTENTS);
+			return dbWidget != null && !dbWidget.isHidden();
+		});
+	}
+
+	/**
+	 * Get items in the deposit box inventory view.
+	 */
+	public java.util.List<java.util.Map<String, Object>> getDepositBoxItems() {
+		return runOnClientThread(() -> {
+			java.util.List<java.util.Map<String, Object>> items = new java.util.ArrayList<>();
+			Widget invWidget = client.getWidget(InterfaceID.BankDepositbox.INVENTORY);
+			if (invWidget == null || invWidget.isHidden()) return items;
+
+			Widget[] children = invWidget.getDynamicChildren();
+			if (children == null) return items;
+
+			for (int i = 0; i < children.length; i++) {
+				Widget child = children[i];
+				if (child == null || child.getItemId() <= 0) continue;
+				ItemComposition def = client.getItemDefinition(child.getItemId());
+				java.util.Map<String, Object> item = new java.util.LinkedHashMap<>();
+				item.put("slot", i);
+				item.put("id", child.getItemId());
+				item.put("name", def != null ? def.getName() : "Unknown");
+				item.put("quantity", child.getItemQuantity());
+				items.add(item);
+			}
+			return items;
+		});
+	}
+
+	/**
+	 * Click a deposit box inventory item by name (left-click = deposit default quantity).
+	 */
+	public boolean clickDepositBoxItem(String itemName, MouseMovementProfile profile) {
+		java.awt.Point clickTarget = runOnClientThread(() -> {
+			Widget invWidget = client.getWidget(InterfaceID.BankDepositbox.INVENTORY);
+			if (invWidget == null || invWidget.isHidden()) {
+				log.warn("Deposit box inventory not open");
+				return null;
+			}
+
+			Widget[] children = invWidget.getDynamicChildren();
+			if (children == null) return null;
+
+			for (Widget child : children) {
+				if (child == null || child.getItemId() <= 0) continue;
+				ItemComposition def = client.getItemDefinition(child.getItemId());
+				if (def != null && def.getName().toLowerCase().contains(itemName.toLowerCase())) {
+					log.info("Found deposit box item: {}", def.getName());
+					return getWidgetClickPoint(child, profile);
+				}
+			}
+
+			log.warn("Deposit box item '{}' not found", itemName);
+			return null;
+		});
+		if (clickTarget == null) return false;
+		mouseMovement.moveAndClick(clickTarget, profile);
+		return true;
+	}
+
+	/**
+	 * Right-click a deposit box item and select an option (e.g., "Deposit-1", "Deposit-5", "Deposit-All").
+	 */
+	public boolean rightClickDepositBoxItemAndSelect(String itemName, String option, MouseMovementProfile profile) {
+		Point itemPoint = runOnClientThread(() -> {
+			Widget invWidget = client.getWidget(InterfaceID.BankDepositbox.INVENTORY);
+			if (invWidget == null || invWidget.isHidden()) {
+				log.warn("Deposit box inventory not open");
+				return null;
+			}
+
+			Widget[] children = invWidget.getDynamicChildren();
+			if (children == null) return null;
+
+			for (Widget child : children) {
+				if (child == null || child.getItemId() <= 0) continue;
+				ItemComposition def = client.getItemDefinition(child.getItemId());
+				if (def != null && def.getName().toLowerCase().contains(itemName.toLowerCase())) {
+					return getWidgetScreenPoint(child);
+				}
+			}
+
+			log.warn("Deposit box item '{}' not found", itemName);
+			return null;
+		});
+
+		if (itemPoint == null) return false;
+
+		int jitterX = (int) ((Math.random() - 0.5) * defaultJitter() * 2);
+		int jitterY = (int) ((Math.random() - 0.5) * defaultJitter() * 2);
+
+		return rightClickAndSelect(
+			itemPoint.getX() + jitterX,
+			itemPoint.getY() + jitterY,
+			option, itemName, profile
+		);
+	}
+
+	/**
+	 * Click the deposit-inventory button in the deposit box.
+	 */
+	public boolean depositBoxDepositInventory(MouseMovementProfile profile) {
+		return clickWidgetByPackedId(InterfaceID.BankDepositbox.DEPOSIT_INV, profile);
+	}
+
+	/**
+	 * Click the deposit-equipment button in the deposit box.
+	 */
+	public boolean depositBoxDepositEquipment(MouseMovementProfile profile) {
+		return clickWidgetByPackedId(InterfaceID.BankDepositbox.DEPOSIT_WORN, profile);
+	}
+
+	/**
+	 * Click the deposit-looting-bag button in the deposit box.
+	 */
+	public boolean depositBoxDepositLootingBag(MouseMovementProfile profile) {
+		return clickWidgetByPackedId(InterfaceID.BankDepositbox.DEPOSIT_LOOTINGBAG, profile);
+	}
+
+	/**
+	 * Set deposit box quantity mode (1, 5, 10, -1=X, 0=All).
+	 */
+	public boolean setDepositBoxQuantity(int quantity, MouseMovementProfile profile) {
+		int widgetId;
+		switch (quantity) {
+			case 1:  widgetId = InterfaceID.BankDepositbox._1; break;
+			case 5:  widgetId = InterfaceID.BankDepositbox._5; break;
+			case 10: widgetId = InterfaceID.BankDepositbox._10; break;
+			case -1: widgetId = InterfaceID.BankDepositbox.X; break;
+			case 0:  widgetId = InterfaceID.BankDepositbox.ALL; break;
+			default:
+				log.warn("Invalid deposit box quantity: {} (use 1, 5, 10, -1=X, 0=All)", quantity);
+				return false;
+		}
+		return clickWidgetByPackedId(widgetId, profile);
+	}
+
+	/**
+	 * Close the deposit box.
+	 */
+	public boolean closeDepositBox(MouseMovementProfile profile) {
+		java.awt.Point clickTarget = runOnClientThread(() -> {
+			Widget frameWidget = client.getWidget(InterfaceID.BankDepositbox.FRAME);
+			if (frameWidget == null || frameWidget.isHidden()) {
+				log.warn("Deposit box frame not found");
+				return null;
+			}
+			Widget[] children = frameWidget.getDynamicChildren();
+			if (children != null && children.length > 11) {
+				Widget closeBtn = children[11];
+				if (closeBtn != null && !closeBtn.isHidden()) {
+					return getWidgetClickPoint(closeBtn, profile);
+				}
+			}
+			Widget[] staticChildren = frameWidget.getStaticChildren();
+			if (staticChildren != null) {
+				for (Widget child : staticChildren) {
+					if (child != null && !child.isHidden()) {
+						String[] actions = child.getActions();
+						if (actions != null) {
+							for (String action : actions) {
+								if ("Close".equals(action)) {
+									return getWidgetClickPoint(child, profile);
+								}
+							}
+						}
+					}
+				}
+			}
+			log.warn("Deposit box close button not found");
+			return null;
+		});
+		if (clickTarget == null) return false;
+		mouseMovement.moveAndClick(clickTarget, profile);
+		return true;
+	}
+
+	// ===== MINIMAP CLICK =====
+
+	/**
+	 * Click a world coordinate on the minimap. Returns false if the point is out of minimap range (~20 tiles).
+	 */
+	public boolean clickMinimap(int worldX, int worldY, int plane, MouseMovementProfile profile) {
+		Point minimapPoint = runOnClientThread(() -> {
+			net.runelite.api.WorldView wv = client.getTopLevelWorldView();
+			if (wv == null) return null;
+
+			net.runelite.api.coords.LocalPoint localPoint = net.runelite.api.coords.LocalPoint.fromWorld(
+				wv, new WorldPoint(worldX, worldY, plane));
+			if (localPoint == null) return null;
+
+			return net.runelite.api.Perspective.localToMinimap(client, localPoint);
+		});
+
+		if (minimapPoint == null) {
+			log.warn("Cannot click minimap for ({}, {}, {}) — out of range or not in scene", worldX, worldY, plane);
+			return false;
+		}
+
+		int jitterX = (int) ((Math.random() - 0.5) * 4);
+		int jitterY = (int) ((Math.random() - 0.5) * 4);
+
+		log.info("Clicking minimap at screen({},{}) for world({},{},{})",
+			minimapPoint.getX() + jitterX, minimapPoint.getY() + jitterY, worldX, worldY, plane);
+
+		mouseMovement.moveAndClick(
+			new java.awt.Point(minimapPoint.getX() + jitterX, minimapPoint.getY() + jitterY),
+			profile
+		);
+		return true;
+	}
+
+	/**
+	 * Click a relative offset on the minimap from the player's current position.
+	 * dx/dy are in tiles (e.g., dx=5, dy=0 = 5 tiles east).
+	 */
+	public boolean clickMinimapRelative(int dx, int dy, MouseMovementProfile profile) {
+		WorldPoint playerPos = runOnClientThread(() -> client.getLocalPlayer().getWorldLocation());
+		if (playerPos == null) return false;
+		return clickMinimap(playerPos.getX() + dx, playerPos.getY() + dy, playerPos.getPlane(), profile);
 	}
 }

@@ -264,6 +264,68 @@ public class ApiServerPlugin extends Plugin {
         // Chat endpoints
         app.get("/api/v1/chat/recent", this::handleGetRecentChat);
 
+        // Prayer endpoints
+        app.get("/api/v1/prayer", this::handleGetPrayerState);
+        app.post("/api/v1/prayer/toggle", this::handleTogglePrayerByName);
+        app.get("/api/v1/prayer/active", this::handleIsPrayerActive);
+        app.post("/api/v1/prayer/quick-toggle", this::handleToggleQuickPrayer);
+
+        // Spellbook endpoints
+        app.get("/api/v1/spellbook", this::handleGetSpellbookState);
+        app.post("/api/v1/spellbook/cast", this::handleCastSpell);
+        app.post("/api/v1/spellbook/cast-on-item", this::handleCastSpellOnItem);
+
+        // Combat endpoints
+        app.get("/api/v1/combat", this::handleGetCombatState);
+        app.post("/api/v1/combat/style", this::handleSetCombatStyle);
+        app.post("/api/v1/combat/retaliate", this::handleToggleAutoRetaliate);
+        app.get("/api/v1/combat/special", this::handleGetSpecialAttack);
+        app.post("/api/v1/combat/special", this::handleActivateSpecialAttack);
+
+        // Player interaction endpoints
+        app.post("/api/v1/interaction/player/lookup", this::handlePlayerLookup);
+
+        // Anti-ban endpoints
+        app.post("/api/v1/antiban/start", this::handleAntiBanStart);
+        app.post("/api/v1/antiban/stop", this::handleAntiBanStop);
+        app.get("/api/v1/antiban/status", this::handleAntiBanStatus);
+        app.post("/api/v1/antiban/trigger", this::handleAntiBanTrigger);
+
+        // Idle management endpoints
+        app.get("/api/v1/player/idle", this::handleGetIdleState);
+        app.post("/api/v1/player/idle/reset", this::handleResetIdleTicks);
+
+        // Make / crafting menu endpoints
+        app.get("/api/v1/make/status", this::handleGetMakeStatus);
+        app.post("/api/v1/make/select", this::handleMakeSelect);
+        app.post("/api/v1/make/quantity", this::handleSetMakeQuantity);
+
+        // Shop endpoints
+        app.get("/api/v1/shop/items", this::handleGetShopItems);
+        app.get("/api/v1/shop/status", this::handleGetShopStatus);
+        app.post("/api/v1/shop/buy", this::handleShopBuy);
+        app.post("/api/v1/shop/sell", this::handleShopSell);
+        app.post("/api/v1/shop/quantity", this::handleSetShopQuantity);
+        app.post("/api/v1/shop/close", this::handleCloseShop);
+
+        // Use item on X endpoints
+        app.post("/api/v1/interaction/use-item-on-item", this::handleUseItemOnItem);
+        app.post("/api/v1/interaction/use-item-on-object", this::handleUseItemOnObject);
+        app.post("/api/v1/interaction/use-item-on-npc", this::handleUseItemOnNPC);
+
+        // Deposit box endpoints
+        app.get("/api/v1/deposit-box/items", this::handleGetDepositBoxItems);
+        app.get("/api/v1/deposit-box/status", this::handleGetDepositBoxStatus);
+        app.post("/api/v1/deposit-box/deposit", this::handleDepositBoxDeposit);
+        app.post("/api/v1/deposit-box/deposit-inventory", this::handleDepositBoxDepositInventory);
+        app.post("/api/v1/deposit-box/deposit-equipment", this::handleDepositBoxDepositEquipment);
+        app.post("/api/v1/deposit-box/deposit-loot", this::handleDepositBoxDepositLoot);
+        app.post("/api/v1/deposit-box/quantity", this::handleSetDepositBoxQuantity);
+        app.post("/api/v1/deposit-box/close", this::handleCloseDepositBox);
+
+        // Minimap click endpoints
+        app.post("/api/v1/interaction/minimap/click", this::handleMinimapClick);
+
         // Root endpoint
         app.get("/", this::handleRoot);
 
@@ -391,6 +453,37 @@ public class ApiServerPlugin extends Plugin {
 
         // Chat endpoints
         endpoints.put("chatRecent", "GET /api/v1/chat/recent?limit=50&type=GAMEMESSAGE");
+
+        // Prayer endpoints
+        endpoints.put("prayerState", "GET /api/v1/prayer");
+        endpoints.put("prayerToggle", "POST /api/v1/prayer/toggle {prayer, profile?}");
+        endpoints.put("prayerActive", "GET /api/v1/prayer/active?prayer=PROTECT_FROM_MELEE");
+        endpoints.put("quickPrayerToggle", "POST /api/v1/prayer/quick-toggle");
+
+        // Spellbook endpoints
+        endpoints.put("spellbookState", "GET /api/v1/spellbook");
+        endpoints.put("castSpell", "POST /api/v1/spellbook/cast {spell, profile?}");
+        endpoints.put("castSpellOnItem", "POST /api/v1/spellbook/cast-on-item {spell, item, profile?}");
+
+        // Combat endpoints
+        endpoints.put("combatState", "GET /api/v1/combat");
+        endpoints.put("combatStyle", "POST /api/v1/combat/style {style}");
+        endpoints.put("autoRetaliate", "POST /api/v1/combat/retaliate");
+        endpoints.put("specialAttackGet", "GET /api/v1/combat/special");
+        endpoints.put("specialAttackActivate", "POST /api/v1/combat/special");
+
+        // Player interaction
+        endpoints.put("playerLookup", "POST /api/v1/interaction/player/lookup {playerName}");
+
+        // Anti-ban endpoints
+        endpoints.put("antiBanStart", "POST /api/v1/antiban/start {minIntervalMs?, maxIntervalMs?, weights?}");
+        endpoints.put("antiBanStop", "POST /api/v1/antiban/stop");
+        endpoints.put("antiBanStatus", "GET /api/v1/antiban/status");
+        endpoints.put("antiBanTrigger", "POST /api/v1/antiban/trigger {action}");
+
+        // Idle management
+        endpoints.put("idleState", "GET /api/v1/player/idle");
+        endpoints.put("idleReset", "POST /api/v1/player/idle/reset");
 
         info.put("endpoints", endpoints);
         info.put("websocket", "ws://localhost:7070/ws/events");
@@ -1609,6 +1702,116 @@ public class ApiServerPlugin extends Plugin {
             case "hop_world":
                 seq.hopWorld(((Number) params.get("world")).intValue());
                 return true;
+            case "toggle_prayer":
+                seq.togglePrayer((String) params.get("prayer"));
+                return true;
+            case "toggle_quick_prayer":
+                seq.toggleQuickPrayer();
+                return true;
+            case "cast_spell":
+                seq.castSpell((String) params.get("spell"));
+                return true;
+            case "cast_spell_on_item":
+                seq.castSpellOnItem((String) params.get("spell"), (String) params.get("item"));
+                return true;
+            case "set_combat_style":
+                seq.setCombatStyle(((Number) params.get("style")).intValue());
+                return true;
+            case "toggle_auto_retaliate":
+                seq.toggleAutoRetaliate();
+                return true;
+            case "activate_special_attack":
+                seq.activateSpecialAttack();
+                return true;
+            case "antiban_start":
+                int abMin = params.containsKey("minIntervalMs") ? ((Number) params.get("minIntervalMs")).intValue() : 15000;
+                int abMax = params.containsKey("maxIntervalMs") ? ((Number) params.get("maxIntervalMs")).intValue() : 90000;
+                seq.antiBanStart(abMin, abMax);
+                return true;
+            case "antiban_stop":
+                seq.antiBanStop();
+                return true;
+            case "random_sleep":
+                int sleepMin = ((Number) params.get("min")).intValue();
+                int sleepMax = ((Number) params.get("max")).intValue();
+                seq.randomSleep(sleepMin, sleepMax);
+                return true;
+            case "reset_idle":
+                seq.resetIdle();
+                return true;
+            // Make menu steps
+            case "select_make_option":
+                String makeOpt = (String) params.get("option");
+                int makeIdx = params.containsKey("index") ? ((Number) params.get("index")).intValue() : -1;
+                seq.selectMakeOption(makeOpt, makeIdx);
+                return true;
+            case "set_make_quantity":
+                seq.setMakeQuantity(((Number) params.get("quantity")).intValue());
+                return true;
+            // Shop steps
+            case "click_shop_item":
+                seq.clickShopItem((String) params.get("itemName"));
+                return true;
+            case "right_click_shop_item_select":
+                seq.rightClickShopItemAndSelect((String) params.get("itemName"), (String) params.get("option"));
+                return true;
+            case "click_shop_inventory_item":
+                seq.clickShopInventoryItem((String) params.get("itemName"));
+                return true;
+            case "right_click_shop_inventory_item_select":
+                seq.rightClickShopInventoryItemAndSelect((String) params.get("itemName"), (String) params.get("option"));
+                return true;
+            case "set_shop_quantity":
+                seq.setShopQuantity(((Number) params.get("quantity")).intValue());
+                return true;
+            case "close_shop":
+                seq.closeShop();
+                return true;
+            // Use item steps
+            case "use_item_on_item":
+                seq.useItemOnItem((String) params.get("sourceItem"), (String) params.get("targetItem"));
+                return true;
+            case "use_item_on_object":
+                seq.useItemOnObject((String) params.get("itemName"), (String) params.get("objectName"));
+                return true;
+            case "use_item_on_npc":
+                seq.useItemOnNPC((String) params.get("itemName"), (String) params.get("npcName"));
+                return true;
+            // Deposit box steps
+            case "click_deposit_box_item":
+                seq.clickDepositBoxItem((String) params.get("itemName"));
+                return true;
+            case "right_click_deposit_box_item_select":
+                seq.rightClickDepositBoxItemAndSelect((String) params.get("itemName"), (String) params.get("option"));
+                return true;
+            case "deposit_box_deposit_inventory":
+                seq.depositBoxDepositInventory();
+                return true;
+            case "deposit_box_deposit_equipment":
+                seq.depositBoxDepositEquipment();
+                return true;
+            case "deposit_box_deposit_loot":
+                seq.depositBoxDepositLoot();
+                return true;
+            case "set_deposit_box_quantity":
+                seq.setDepositBoxQuantity(((Number) params.get("quantity")).intValue());
+                return true;
+            case "close_deposit_box":
+                seq.closeDepositBox();
+                return true;
+            // Minimap click step
+            case "click_minimap":
+                if (params.containsKey("dx") || params.containsKey("dy")) {
+                    int mmDx = params.containsKey("dx") ? ((Number) params.get("dx")).intValue() : 0;
+                    int mmDy = params.containsKey("dy") ? ((Number) params.get("dy")).intValue() : 0;
+                    seq.clickMinimapRelative(mmDx, mmDy);
+                } else {
+                    int mmX = ((Number) params.get("x")).intValue();
+                    int mmY = ((Number) params.get("y")).intValue();
+                    int mmPlane = params.containsKey("plane") ? ((Number) params.get("plane")).intValue() : 0;
+                    seq.clickMinimap(mmX, mmY, mmPlane);
+                }
+                return true;
             default:
                 return false;
         }
@@ -2359,5 +2562,544 @@ public class ApiServerPlugin extends Plugin {
                 log.warn("Error broadcasting event to WebSocket client", e);
             }
         });
+    }
+
+    // ===== PRAYER HANDLERS =====
+
+    private void handleGetPrayerState(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        ctx.json(interactionPlugin.getPrayerState());
+    }
+
+    private void handleTogglePrayerByName(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            @SuppressWarnings("unchecked") Map<String, Object> body = ctx.bodyAsClass(Map.class);
+            String prayer = (String) body.get("prayer");
+            if (prayer == null || prayer.isEmpty()) {
+                ctx.status(400).json(createError("'prayer' is required (e.g., PROTECT_FROM_MELEE, PIETY)"));
+                return;
+            }
+            String profileName = (String) body.getOrDefault("profile", "NORMAL");
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+            boolean success = interactionPlugin.togglePrayer(prayer, profile);
+            ctx.json(Map.of("success", success, "prayer", prayer));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    private void handleIsPrayerActive(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        String prayer = ctx.queryParam("prayer");
+        if (prayer == null || prayer.isEmpty()) {
+            ctx.status(400).json(createError("'prayer' query param required"));
+            return;
+        }
+        boolean active = interactionPlugin.isPrayerActive(prayer);
+        ctx.json(Map.of("prayer", prayer, "active", active));
+    }
+
+    private void handleToggleQuickPrayer(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            MouseMovementProfile profile = MouseMovementProfile.NORMAL;
+            boolean success = interactionPlugin.toggleQuickPrayer(profile);
+            ctx.json(Map.of("success", success));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Error: " + e.getMessage()));
+        }
+    }
+
+    // ===== SPELLBOOK HANDLERS =====
+
+    private void handleGetSpellbookState(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        ctx.json(interactionPlugin.getSpellbookState());
+    }
+
+    private void handleCastSpell(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            @SuppressWarnings("unchecked") Map<String, Object> body = ctx.bodyAsClass(Map.class);
+            String spell = (String) body.get("spell");
+            if (spell == null || spell.isEmpty()) {
+                ctx.status(400).json(createError("'spell' is required (spell name, e.g., 'Varrock Teleport')"));
+                return;
+            }
+            String profileName = (String) body.getOrDefault("profile", "NORMAL");
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+            boolean success = interactionPlugin.castSpellByName(spell, profile);
+            ctx.json(Map.of("success", success, "spell", spell));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    private void handleCastSpellOnItem(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            @SuppressWarnings("unchecked") Map<String, Object> body = ctx.bodyAsClass(Map.class);
+            String spell = (String) body.get("spell");
+            String item = (String) body.get("item");
+            if (spell == null || item == null) {
+                ctx.status(400).json(createError("'spell' and 'item' are required"));
+                return;
+            }
+            String profileName = (String) body.getOrDefault("profile", "NORMAL");
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+            boolean success = interactionPlugin.castSpellOnItem(spell, item, profile);
+            ctx.json(Map.of("success", success, "spell", spell, "item", item));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    // ===== COMBAT HANDLERS =====
+
+    private void handleGetCombatState(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        ctx.json(interactionPlugin.getCombatState());
+    }
+
+    private void handleSetCombatStyle(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            @SuppressWarnings("unchecked") Map<String, Object> body = ctx.bodyAsClass(Map.class);
+            int style = ((Number) body.get("style")).intValue();
+            String profileName = (String) body.getOrDefault("profile", "NORMAL");
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+            boolean success = interactionPlugin.setCombatStyle(style, profile);
+            ctx.json(Map.of("success", success, "style", style));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    private void handleToggleAutoRetaliate(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            MouseMovementProfile profile = MouseMovementProfile.NORMAL;
+            boolean success = interactionPlugin.toggleAutoRetaliate(profile);
+            ctx.json(Map.of("success", success));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Error: " + e.getMessage()));
+        }
+    }
+
+    private void handleGetSpecialAttack(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        ctx.json(interactionPlugin.getSpecialAttackState());
+    }
+
+    private void handleActivateSpecialAttack(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            MouseMovementProfile profile = MouseMovementProfile.NORMAL;
+            boolean success = interactionPlugin.activateSpecialAttack(profile);
+            ctx.json(Map.of("success", success));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Error: " + e.getMessage()));
+        }
+    }
+
+    // ===== PLAYER INTERACTION HANDLERS =====
+
+    private void handlePlayerLookup(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            @SuppressWarnings("unchecked") Map<String, Object> body = ctx.bodyAsClass(Map.class);
+            String playerName = (String) body.get("playerName");
+            if (playerName == null || playerName.isEmpty()) {
+                ctx.status(400).json(createError("'playerName' is required"));
+                return;
+            }
+            String profileName = (String) body.getOrDefault("profile", "NORMAL");
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+            boolean success = interactionPlugin.rightClickPlayerAndSelect(playerName, "Lookup", profile);
+            ctx.json(Map.of("success", success, "playerName", playerName));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    // ===== ANTI-BAN HANDLERS =====
+
+    @SuppressWarnings("unchecked")
+    private void handleAntiBanStart(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            Map<String, Object> body = ctx.bodyAsClass(Map.class);
+            int minInterval = body.containsKey("minIntervalMs") ? ((Number) body.get("minIntervalMs")).intValue() : 15000;
+            int maxInterval = body.containsKey("maxIntervalMs") ? ((Number) body.get("maxIntervalMs")).intValue() : 90000;
+            boolean pauseDuringTasks = body.containsKey("pauseDuringTasks") ? (Boolean) body.get("pauseDuringTasks") : true;
+
+            Map<String, Integer> weights = null;
+            if (body.containsKey("weights")) {
+                Map<String, Object> rawWeights = (Map<String, Object>) body.get("weights");
+                weights = new java.util.HashMap<>();
+                for (Map.Entry<String, Object> entry : rawWeights.entrySet()) {
+                    weights.put(entry.getKey(), ((Number) entry.getValue()).intValue());
+                }
+            }
+
+            interactionPlugin.getAntiBanService().start(minInterval, maxInterval, pauseDuringTasks, weights);
+            ctx.json(Map.of("success", true, "minIntervalMs", minInterval, "maxIntervalMs", maxInterval));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    private void handleAntiBanStop(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        interactionPlugin.getAntiBanService().stop();
+        ctx.json(Map.of("success", true));
+    }
+
+    private void handleAntiBanStatus(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        ctx.json(interactionPlugin.getAntiBanService().getStatus());
+    }
+
+    private void handleAntiBanTrigger(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            @SuppressWarnings("unchecked") Map<String, Object> body = ctx.bodyAsClass(Map.class);
+            String action = (String) body.get("action");
+            if (action == null || action.isEmpty()) {
+                ctx.status(400).json(createError("'action' is required (mouse_fidget, camera_nudge, tab_check, skill_hover, hover_random, idle_pause, examine_object, player_lookup, mouse_off_client)"));
+                return;
+            }
+
+            net.runelite.client.plugins.interaction.AntiBanService abs = interactionPlugin.getAntiBanService();
+            switch (action) {
+                case "mouse_fidget": abs.performMouseFidget(); break;
+                case "camera_nudge": abs.performCameraNudge(); break;
+                case "tab_check": abs.performTabCheck(); break;
+                case "skill_hover": abs.performSkillHover(); break;
+                case "hover_random": abs.performHoverRandom(); break;
+                case "idle_pause": abs.performIdlePause(); break;
+                case "examine_object": abs.performExamineObject(); break;
+                case "player_lookup": abs.performPlayerLookup(); break;
+                case "mouse_off_client": abs.performMouseOffClient(); break;
+                default:
+                    ctx.status(400).json(createError("Unknown action: " + action));
+                    return;
+            }
+            ctx.json(Map.of("success", true, "action", action));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Error: " + e.getMessage()));
+        }
+    }
+
+    // ===== IDLE MANAGEMENT HANDLERS =====
+
+    private void handleGetIdleState(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        ctx.json(interactionPlugin.getIdleState());
+    }
+
+    private void handleResetIdleTicks(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        interactionPlugin.resetIdleTicks();
+        ctx.json(Map.of("success", true));
+    }
+
+    // ===== MAKE / CRAFTING MENU HANDLERS =====
+
+    private void handleGetMakeStatus(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        ctx.json(interactionPlugin.getMakeMenuStatus());
+    }
+
+    private void handleMakeSelect(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            @SuppressWarnings("unchecked") Map<String, Object> body = ctx.bodyAsClass(Map.class);
+            String optionName = (String) body.get("option");
+            int optionIndex = body.containsKey("index") ? ((Number) body.get("index")).intValue() : -1;
+            if (optionName == null && optionIndex < 0) {
+                ctx.status(400).json(createError("'option' (name) or 'index' (0-based) is required"));
+                return;
+            }
+            String profileName = (String) body.getOrDefault("profile", "NORMAL");
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+            boolean success = interactionPlugin.selectMakeOption(optionName, optionIndex, profile);
+            ctx.json(Map.of("success", success));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    private void handleSetMakeQuantity(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            @SuppressWarnings("unchecked") Map<String, Object> body = ctx.bodyAsClass(Map.class);
+            int quantity = ((Number) body.get("quantity")).intValue();
+            String profileName = (String) body.getOrDefault("profile", "NORMAL");
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+            boolean success = interactionPlugin.setMakeQuantity(quantity, profile);
+            ctx.json(Map.of("success", success, "quantity", quantity));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    // ===== SHOP HANDLERS =====
+
+    private void handleGetShopStatus(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        ctx.json(Map.of("open", interactionPlugin.isShopOpen()));
+    }
+
+    private void handleGetShopItems(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        var items = interactionPlugin.getShopItems();
+        ctx.json(Map.of("count", items.size(), "items", items));
+    }
+
+    private void handleShopBuy(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            @SuppressWarnings("unchecked") Map<String, Object> body = ctx.bodyAsClass(Map.class);
+            String itemName = (String) body.get("itemName");
+            if (itemName == null || itemName.isEmpty()) {
+                ctx.status(400).json(createError("'itemName' is required"));
+                return;
+            }
+            String option = (String) body.get("option");
+            String profileName = (String) body.getOrDefault("profile", "NORMAL");
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+
+            boolean success;
+            if (option != null && !option.isEmpty()) {
+                success = interactionPlugin.rightClickShopItemAndSelect(itemName, option, profile);
+            } else {
+                success = interactionPlugin.clickShopItem(itemName, profile);
+            }
+            ctx.json(Map.of("success", success, "itemName", itemName));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    private void handleShopSell(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            @SuppressWarnings("unchecked") Map<String, Object> body = ctx.bodyAsClass(Map.class);
+            String itemName = (String) body.get("itemName");
+            if (itemName == null || itemName.isEmpty()) {
+                ctx.status(400).json(createError("'itemName' is required"));
+                return;
+            }
+            String option = (String) body.get("option");
+            String profileName = (String) body.getOrDefault("profile", "NORMAL");
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+
+            boolean success;
+            if (option != null && !option.isEmpty()) {
+                success = interactionPlugin.rightClickShopInventoryItemAndSelect(itemName, option, profile);
+            } else {
+                success = interactionPlugin.clickShopInventoryItem(itemName, profile);
+            }
+            ctx.json(Map.of("success", success, "itemName", itemName));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    private void handleSetShopQuantity(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            @SuppressWarnings("unchecked") Map<String, Object> body = ctx.bodyAsClass(Map.class);
+            int quantity = ((Number) body.get("quantity")).intValue();
+            String profileName = (String) body.getOrDefault("profile", "NORMAL");
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+            boolean success = interactionPlugin.setShopQuantity(quantity, profile);
+            ctx.json(Map.of("success", success, "quantity", quantity));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    private void handleCloseShop(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        String profileName = ctx.queryParam("profile");
+        MouseMovementProfile profile = MouseMovementProfile.fromString(profileName != null ? profileName : "NORMAL");
+        boolean success = interactionPlugin.closeShop(profile);
+        ctx.json(Map.of("success", success));
+    }
+
+    // ===== USE ITEM ON X HANDLERS =====
+
+    private void handleUseItemOnItem(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            @SuppressWarnings("unchecked") Map<String, Object> body = ctx.bodyAsClass(Map.class);
+            String sourceItem = (String) body.get("sourceItem");
+            String targetItem = (String) body.get("targetItem");
+            if (sourceItem == null || targetItem == null) {
+                ctx.status(400).json(createError("'sourceItem' and 'targetItem' are required"));
+                return;
+            }
+            String profileName = (String) body.getOrDefault("profile", "NORMAL");
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+            boolean success = interactionPlugin.useItemOnItem(sourceItem, targetItem, profile);
+            ctx.json(Map.of("success", success, "sourceItem", sourceItem, "targetItem", targetItem));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    private void handleUseItemOnObject(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            @SuppressWarnings("unchecked") Map<String, Object> body = ctx.bodyAsClass(Map.class);
+            String itemName = (String) body.get("itemName");
+            String objectName = (String) body.get("objectName");
+            if (itemName == null || objectName == null) {
+                ctx.status(400).json(createError("'itemName' and 'objectName' are required"));
+                return;
+            }
+            String profileName = (String) body.getOrDefault("profile", "NORMAL");
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+            boolean success = interactionPlugin.useItemOnObject(itemName, objectName, profile);
+            ctx.json(Map.of("success", success, "itemName", itemName, "objectName", objectName));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    private void handleUseItemOnNPC(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            @SuppressWarnings("unchecked") Map<String, Object> body = ctx.bodyAsClass(Map.class);
+            String itemName = (String) body.get("itemName");
+            String npcName = (String) body.get("npcName");
+            if (itemName == null || npcName == null) {
+                ctx.status(400).json(createError("'itemName' and 'npcName' are required"));
+                return;
+            }
+            String profileName = (String) body.getOrDefault("profile", "NORMAL");
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+            boolean success = interactionPlugin.useItemOnNPC(itemName, npcName, profile);
+            ctx.json(Map.of("success", success, "itemName", itemName, "npcName", npcName));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    // ===== DEPOSIT BOX HANDLERS =====
+
+    private void handleGetDepositBoxStatus(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        ctx.json(Map.of("open", interactionPlugin.isDepositBoxOpen()));
+    }
+
+    private void handleGetDepositBoxItems(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        var items = interactionPlugin.getDepositBoxItems();
+        ctx.json(Map.of("count", items.size(), "items", items));
+    }
+
+    private void handleDepositBoxDeposit(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            @SuppressWarnings("unchecked") Map<String, Object> body = ctx.bodyAsClass(Map.class);
+            String itemName = (String) body.get("itemName");
+            if (itemName == null || itemName.isEmpty()) {
+                ctx.status(400).json(createError("'itemName' is required"));
+                return;
+            }
+            String option = (String) body.get("option");
+            String profileName = (String) body.getOrDefault("profile", "NORMAL");
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+
+            boolean success;
+            if (option != null && !option.isEmpty()) {
+                success = interactionPlugin.rightClickDepositBoxItemAndSelect(itemName, option, profile);
+            } else {
+                success = interactionPlugin.clickDepositBoxItem(itemName, profile);
+            }
+            ctx.json(Map.of("success", success, "itemName", itemName));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    private void handleDepositBoxDepositInventory(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        String profileName = ctx.queryParam("profile");
+        MouseMovementProfile profile = MouseMovementProfile.fromString(profileName != null ? profileName : "NORMAL");
+        boolean success = interactionPlugin.depositBoxDepositInventory(profile);
+        ctx.json(Map.of("success", success));
+    }
+
+    private void handleDepositBoxDepositEquipment(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        String profileName = ctx.queryParam("profile");
+        MouseMovementProfile profile = MouseMovementProfile.fromString(profileName != null ? profileName : "NORMAL");
+        boolean success = interactionPlugin.depositBoxDepositEquipment(profile);
+        ctx.json(Map.of("success", success));
+    }
+
+    private void handleDepositBoxDepositLoot(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        String profileName = ctx.queryParam("profile");
+        MouseMovementProfile profile = MouseMovementProfile.fromString(profileName != null ? profileName : "NORMAL");
+        boolean success = interactionPlugin.depositBoxDepositLootingBag(profile);
+        ctx.json(Map.of("success", success));
+    }
+
+    private void handleSetDepositBoxQuantity(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            @SuppressWarnings("unchecked") Map<String, Object> body = ctx.bodyAsClass(Map.class);
+            int quantity = ((Number) body.get("quantity")).intValue();
+            String profileName = (String) body.getOrDefault("profile", "NORMAL");
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+            boolean success = interactionPlugin.setDepositBoxQuantity(quantity, profile);
+            ctx.json(Map.of("success", success, "quantity", quantity));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    private void handleCloseDepositBox(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        String profileName = ctx.queryParam("profile");
+        MouseMovementProfile profile = MouseMovementProfile.fromString(profileName != null ? profileName : "NORMAL");
+        boolean success = interactionPlugin.closeDepositBox(profile);
+        ctx.json(Map.of("success", success));
+    }
+
+    // ===== MINIMAP CLICK HANDLERS =====
+
+    private void handleMinimapClick(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            @SuppressWarnings("unchecked") Map<String, Object> body = ctx.bodyAsClass(Map.class);
+
+            String profileName = (String) body.getOrDefault("profile", "NORMAL");
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+
+            boolean success;
+            if (body.containsKey("dx") || body.containsKey("dy")) {
+                int dx = body.containsKey("dx") ? ((Number) body.get("dx")).intValue() : 0;
+                int dy = body.containsKey("dy") ? ((Number) body.get("dy")).intValue() : 0;
+                success = interactionPlugin.clickMinimapRelative(dx, dy, profile);
+            } else if (body.containsKey("x") && body.containsKey("y")) {
+                int x = ((Number) body.get("x")).intValue();
+                int y = ((Number) body.get("y")).intValue();
+                int plane = body.containsKey("plane") ? ((Number) body.get("plane")).intValue() : 0;
+                success = interactionPlugin.clickMinimap(x, y, plane, profile);
+            } else {
+                ctx.status(400).json(createError("Provide 'x'+'y' (world coords) or 'dx'+'dy' (relative tiles)"));
+                return;
+            }
+            ctx.json(Map.of("success", success));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
     }
 }
