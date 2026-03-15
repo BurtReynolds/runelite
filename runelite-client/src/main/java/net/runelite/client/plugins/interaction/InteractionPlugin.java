@@ -25,6 +25,8 @@ import net.runelite.client.plugins.PluginManager;
 import net.runelite.client.plugins.gamestate.GameStatePlugin;
 import net.runelite.client.plugins.objectdetection.GameObjectInfo;
 import net.runelite.client.plugins.objectdetection.ObjectDetectionPlugin;
+import net.runelite.client.game.WorldService;
+import net.runelite.http.api.worlds.WorldResult;
 import net.runelite.client.ui.overlay.OverlayManager;
 
 import javax.inject.Inject;
@@ -60,6 +62,9 @@ public class InteractionPlugin extends Plugin {
 
 	@Inject
 	private OverlayManager overlayManager;
+
+	@Inject
+	private WorldService worldService;
 
 	private HumanMouseMovement mouseMovement;
 	private ObjectDetectionPlugin objectDetectionPlugin;
@@ -3393,22 +3398,24 @@ public class InteractionPlugin extends Plugin {
 	 * Get available worlds info.
 	 */
 	public java.util.List<java.util.Map<String, Object>> getWorldList() {
-		return runOnClientThread(() -> {
-			java.util.List<java.util.Map<String, Object>> worldList = new java.util.ArrayList<>();
-			net.runelite.api.World[] worlds = client.getWorldList();
-			if (worlds == null) return worldList;
-
-			for (net.runelite.api.World world : worlds) {
-				java.util.Map<String, Object> info = new java.util.LinkedHashMap<>();
-				info.put("id", world.getId());
-				info.put("playerCount", world.getPlayerCount());
-				info.put("location", world.getLocation());
-				info.put("activity", world.getActivity());
-				info.put("types", world.getTypes().toString());
-				worldList.add(info);
-			}
+		java.util.List<java.util.Map<String, Object>> worldList = new java.util.ArrayList<>();
+		WorldResult worldResult = worldService.getWorlds();
+		if (worldResult == null) {
+			log.warn("WorldService returned null — world list not yet fetched");
 			return worldList;
-		});
+		}
+
+		for (net.runelite.http.api.worlds.World world : worldResult.getWorlds()) {
+			java.util.Map<String, Object> info = new java.util.LinkedHashMap<>();
+			info.put("id", world.getId());
+			info.put("playerCount", world.getPlayers());
+			info.put("location", world.getLocation());
+			info.put("region", world.getRegion());
+			info.put("activity", world.getActivity());
+			info.put("types", world.getTypes().toString());
+			worldList.add(info);
+		}
+		return worldList;
 	}
 
 	// ===== LOGIN =====
@@ -3683,10 +3690,26 @@ public class InteractionPlugin extends Plugin {
 			java.awt.Point neutralPoint = runOnClientThread(() -> {
 				Widget pinWidget = client.getWidget(keypadGroup, 0);
 				if (pinWidget != null) {
-					// Move to the right side of the pin dialog (the coin/chest area)
 					java.awt.Rectangle bounds = pinWidget.getBounds();
 					if (bounds != null) {
-						return new java.awt.Point(bounds.x + bounds.width - 20, bounds.y + bounds.height / 2);
+						// Pick a random spot along the edges of the pin dialog (outside the button grid)
+						java.util.Random rng = new java.util.Random();
+						int side = rng.nextInt(3); // 0=right, 1=top, 2=bottom
+						int x, y;
+						if (side == 0) {
+							// Right edge area
+							x = bounds.x + bounds.width - 10 - rng.nextInt(30);
+							y = bounds.y + 30 + rng.nextInt(Math.max(1, bounds.height - 60));
+						} else if (side == 1) {
+							// Top area (above buttons)
+							x = bounds.x + 30 + rng.nextInt(Math.max(1, bounds.width - 60));
+							y = bounds.y + 10 + rng.nextInt(20);
+						} else {
+							// Bottom area (below buttons)
+							x = bounds.x + 30 + rng.nextInt(Math.max(1, bounds.width - 60));
+							y = bounds.y + bounds.height - 10 - rng.nextInt(20);
+						}
+						return new java.awt.Point(x, y);
 					}
 				}
 				return null;

@@ -164,6 +164,8 @@ public class WebWalker {
 
 		int attempts = 0;
 		int consecutiveMinimapFails = 0;
+		WorldPoint lastPosition = null;
+		int stuckAtSamePos = 0;
 
 		while (!cancelled && attempts < MAX_WALK_ATTEMPTS) {
 			attempts++;
@@ -185,6 +187,19 @@ public class WebWalker {
 				return true;
 			}
 
+			// Track if we're stuck at the same position
+			if (current.equals(lastPosition)) {
+				stuckAtSamePos++;
+				if (stuckAtSamePos >= 3) {
+					log.info("WEB_WALK: Stuck at {} for {} attempts, trying random camera nudge and shorter walk", current, stuckAtSamePos);
+					// Nudge camera slightly to reset any click issues
+					sleep(500 + (int)(Math.random() * 500));
+				}
+			} else {
+				stuckAtSamePos = 0;
+			}
+			lastPosition = current;
+
 			boolean destInScene = isInScene(snapshot, destination);
 
 			if (destInScene && dist <= 20) {
@@ -202,10 +217,17 @@ public class WebWalker {
 				}
 				consecutiveMinimapFails = 0;
 			} else {
-				boolean walked = walkTowardEdge(snapshot, current, destination, profile);
+				// If stuck, try shorter distances first
+				boolean walked;
+				if (stuckAtSamePos >= 2) {
+					log.info("WEB_WALK: Using shorter walk distance due to stuck detection");
+					walked = walkTowardEdgeShort(snapshot, current, destination, profile);
+				} else {
+					walked = walkTowardEdge(snapshot, current, destination, profile);
+				}
 				if (!walked) {
 					consecutiveMinimapFails++;
-					if (consecutiveMinimapFails >= 3) {
+					if (consecutiveMinimapFails >= 5) {
 						boolean handledObstacle = handleObstacleAlongPath(current,
 							getIntermediateTarget(snapshot, current, destination, 3), profile);
 						if (handledObstacle) {
@@ -273,6 +295,37 @@ public class WebWalker {
 		}
 
 		log.warn("WEB_WALK: All minimap click attempts failed");
+		return false;
+	}
+
+	/**
+	 * Shorter-distance variant of walkTowardEdge, used when the player appears stuck.
+	 * Tries closer targets that are more likely to produce valid minimap clicks.
+	 */
+	private boolean walkTowardEdgeShort(SceneSnapshot snapshot, WorldPoint current, WorldPoint destination, MouseMovementProfile profile) {
+		// Try shorter pathfinding ranges
+		for (int range = 8; range >= 3; range -= 2) {
+			WorldPoint intermediate = getIntermediateTarget(snapshot, current, destination, range);
+			List<WorldPoint> path = findPathInScene(snapshot, current, intermediate);
+			if (path != null && !path.isEmpty()) {
+				log.info("WEB_WALK: Short path found ({} tiles) toward {} (range={})", path.size(), intermediate, range);
+				if (clickAlongPath(path, current, profile)) {
+					waitForPlayerToArrive(intermediate, 8000);
+					return true;
+				}
+			}
+		}
+
+		// Fallback: direct minimap at very short distances
+		for (int dist = 8; dist >= 3; dist -= 2) {
+			WorldPoint directTarget = getIntermediateTarget(snapshot, current, destination, dist);
+			log.info("WEB_WALK: Trying short direct minimap click toward {} (dist={})", directTarget, dist);
+			if (clickMinimapWithRetry(directTarget, profile)) {
+				waitForPlayerToArrive(directTarget, 6000);
+				return true;
+			}
+		}
+
 		return false;
 	}
 
@@ -514,7 +567,46 @@ public class WebWalker {
 				return null;
 			}
 
-			return Perspective.localToMinimap(client, localPoint);
+			Point minimapPoint = Perspective.localToMinimap(client, localPoint);
+			if (minimapPoint == null) {
+				return null;
+			}
+
+			// Validate the point is within the safe clickable area of the minimap.
+			// The minimap is circular, so points near the corners of the draw area
+			// are outside the clickable region. We check against a safe radius that
+			// is smaller than the full minimap draw area to avoid edge clicks.
+			net.runelite.api.widgets.Widget minimapWidget;
+			if (client.isResized()) {
+				if (client.getVarbitValue(net.runelite.api.gameval.VarbitID.RESIZABLE_STONE_ARRANGEMENT) == 1) {
+					minimapWidget = client.getWidget(net.runelite.api.widgets.WidgetInfo.RESIZABLE_MINIMAP_DRAW_AREA);
+				} else {
+					minimapWidget = client.getWidget(net.runelite.api.widgets.WidgetInfo.RESIZABLE_MINIMAP_STONES_DRAW_AREA);
+				}
+			} else {
+				minimapWidget = client.getWidget(net.runelite.api.widgets.WidgetInfo.FIXED_VIEWPORT_MINIMAP_DRAW_AREA);
+			}
+
+			if (minimapWidget == null) {
+				return minimapPoint;
+			}
+
+			Point loc = minimapWidget.getCanvasLocation();
+			int centerX = loc.getX() + minimapWidget.getWidth() / 2;
+			int centerY = loc.getY() + minimapWidget.getHeight() / 2;
+			int dx = minimapPoint.getX() - centerX;
+			int dy = minimapPoint.getY() - centerY;
+			double dist = Math.sqrt(dx * dx + dy * dy);
+
+			// Use 80% of the minimap radius as the safe zone
+			double safeRadius = Math.min(minimapWidget.getWidth(), minimapWidget.getHeight()) / 2.0 * 0.80;
+			if (dist > safeRadius) {
+				log.debug("WEB_WALK: Minimap point ({},{}) too close to edge (dist={}, safeRadius={}), rejecting",
+					minimapPoint.getX(), minimapPoint.getY(), (int) dist, (int) safeRadius);
+				return null;
+			}
+
+			return minimapPoint;
 		});
 	}
 

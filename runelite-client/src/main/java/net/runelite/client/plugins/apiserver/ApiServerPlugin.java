@@ -1376,6 +1376,12 @@ public class ApiServerPlugin extends Plugin {
             MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
             WorldPoint destination = new WorldPoint(x, y, plane);
 
+            // Cancel any existing walk before starting a new one
+            if (activeWalkFuture != null && !activeWalkFuture.isDone()) {
+                interactionPlugin.cancelWebWalk();
+                try { activeWalkFuture.get(3, java.util.concurrent.TimeUnit.SECONDS); } catch (Exception ignored) {}
+            }
+
             activeWalkFuture = java.util.concurrent.CompletableFuture.supplyAsync(() ->
                 interactionPlugin.webWalkTo(destination, profile));
 
