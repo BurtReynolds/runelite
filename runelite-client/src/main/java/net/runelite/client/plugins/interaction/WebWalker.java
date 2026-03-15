@@ -38,6 +38,8 @@ public class WebWalker {
 	private static final Set<String> OBSTACLE_NAMES_LOWER = Set.of(
 		"door", "gate", "large door", "castle door", "garden gate"
 	);
+	private static final int WALL_PROXIMITY_PENALTY_NEAR = 8;  // per blocked neighbor within 1 tile
+	private static final int WALL_PROXIMITY_PENALTY_FAR = 3;   // per blocked tile within 2 tiles
 	private static final int MAX_PATH_LENGTH = 500;
 	private static final int MAX_WALK_ATTEMPTS = 200;
 	private static final int MAX_MINIMAP_RETRIES = 3;
@@ -243,7 +245,7 @@ public class WebWalker {
 					continue;
 				}
 				consecutiveMinimapFails = 0;
-				sleep(400 + (int)(Math.random() * 400));
+				sleep(200 + (int)(Math.random() * 200));
 			}
 		}
 
@@ -262,39 +264,29 @@ public class WebWalker {
 			return false;
 		}
 
-		if (!clickAlongPath(path, current, profile)) {
+		if (!clickNextWaypoint(snapshot, path, current, profile)) {
 			return false;
 		}
 
-		waitForPlayerToArrive(target, 8000);
+		waitAndMonitor(target, target, 8000);
 		return true;
 	}
 
 	private boolean walkTowardEdge(SceneSnapshot snapshot, WorldPoint current, WorldPoint destination, MouseMovementProfile profile) {
 		// Try pathfinding at decreasing ranges
-		for (int range = 16; range >= 5; range -= 3) {
+		for (int range = 16; range >= 3; range -= 2) {
 			WorldPoint intermediate = getIntermediateTarget(snapshot, current, destination, range);
 			List<WorldPoint> path = findPathInScene(snapshot, current, intermediate);
 			if (path != null && !path.isEmpty()) {
 				log.info("WEB_WALK: Path found ({} tiles) toward {} (range={})", path.size(), intermediate, range);
-				if (clickAlongPath(path, current, profile)) {
-					waitForPlayerToArrive(intermediate, 10000);
+				if (clickNextWaypoint(snapshot, path, current, profile)) {
+					waitAndMonitor(intermediate, destination, 10000);
 					return true;
 				}
 			}
 		}
 
-		// Fallback: click minimap directly toward destination at decreasing distances
-		for (int dist = 14; dist >= 3; dist -= 3) {
-			WorldPoint directTarget = getIntermediateTarget(snapshot, current, destination, dist);
-			log.info("WEB_WALK: Trying direct minimap click toward {} (dist={})", directTarget, dist);
-			if (clickMinimapWithRetry(directTarget, profile)) {
-				waitForPlayerToArrive(directTarget, 10000);
-				return true;
-			}
-		}
-
-		log.warn("WEB_WALK: All minimap click attempts failed");
+		log.warn("WEB_WALK: All pathfinding attempts failed");
 		return false;
 	}
 
@@ -304,25 +296,15 @@ public class WebWalker {
 	 */
 	private boolean walkTowardEdgeShort(SceneSnapshot snapshot, WorldPoint current, WorldPoint destination, MouseMovementProfile profile) {
 		// Try shorter pathfinding ranges
-		for (int range = 8; range >= 3; range -= 2) {
+		for (int range = 8; range >= 3; range -= 1) {
 			WorldPoint intermediate = getIntermediateTarget(snapshot, current, destination, range);
 			List<WorldPoint> path = findPathInScene(snapshot, current, intermediate);
 			if (path != null && !path.isEmpty()) {
 				log.info("WEB_WALK: Short path found ({} tiles) toward {} (range={})", path.size(), intermediate, range);
-				if (clickAlongPath(path, current, profile)) {
-					waitForPlayerToArrive(intermediate, 8000);
+				if (clickNextWaypoint(snapshot, path, current, profile)) {
+					waitAndMonitor(intermediate, destination, 8000);
 					return true;
 				}
-			}
-		}
-
-		// Fallback: direct minimap at very short distances
-		for (int dist = 8; dist >= 3; dist -= 2) {
-			WorldPoint directTarget = getIntermediateTarget(snapshot, current, destination, dist);
-			log.info("WEB_WALK: Trying short direct minimap click toward {} (dist={})", directTarget, dist);
-			if (clickMinimapWithRetry(directTarget, profile)) {
-				waitForPlayerToArrive(directTarget, 6000);
-				return true;
 			}
 		}
 
@@ -409,8 +391,10 @@ public class WebWalker {
 					continue;
 				}
 
+				int moveCost = (dir[0] != 0 && dir[1] != 0 ? 14 : 10);
+				int wallPenalty = wallProximityCost(flags, nx, ny);
 				int tentativeG = gScore.getOrDefault(currentKey, Integer.MAX_VALUE)
-					+ (dir[0] != 0 && dir[1] != 0 ? 14 : 10);
+					+ moveCost + wallPenalty;
 
 				if (tentativeG < gScore.getOrDefault(neighborKey, Integer.MAX_VALUE)) {
 					cameFrom.put(neighborKey, currentKey);
@@ -470,6 +454,37 @@ public class WebWalker {
 		return false;
 	}
 
+	private int wallProximityCost(int[][] flags, int sceneX, int sceneY) {
+		int cost = 0;
+
+		// Check 1-tile radius (immediate neighbors) — heavy penalty
+		for (int dx = -1; dx <= 1; dx++) {
+			for (int dy = -1; dy <= 1; dy++) {
+				if (dx == 0 && dy == 0) continue;
+				int nx = sceneX + dx;
+				int ny = sceneY + dy;
+				if (!isValidSceneTile(nx, ny) || (flags[nx][ny] & MOVEMENT_BLOCKED) != 0) {
+					cost += WALL_PROXIMITY_PENALTY_NEAR;
+				}
+			}
+		}
+
+		// Check 2-tile radius (outer ring only) — lighter penalty
+		for (int dx = -2; dx <= 2; dx++) {
+			for (int dy = -2; dy <= 2; dy++) {
+				// Skip the inner 1-tile ring (already counted above)
+				if (Math.abs(dx) <= 1 && Math.abs(dy) <= 1) continue;
+				int nx = sceneX + dx;
+				int ny = sceneY + dy;
+				if (!isValidSceneTile(nx, ny) || (flags[nx][ny] & MOVEMENT_BLOCKED) != 0) {
+					cost += WALL_PROXIMITY_PENALTY_FAR;
+				}
+			}
+		}
+
+		return cost;
+	}
+
 	private List<WorldPoint> reconstructPath(Map<Long, Long> cameFrom, long endKey, int baseX, int baseY, int plane) {
 		List<WorldPoint> path = new ArrayList<>();
 		long current = endKey;
@@ -505,21 +520,168 @@ public class WebWalker {
 		return sceneX >= 0 && sceneX < SCENE_SIZE && sceneY >= 0 && sceneY < SCENE_SIZE;
 	}
 
+	// ===== Path waypoint extraction =====
+
+	/**
+	 * Extract waypoints from an A* path. Waypoints are placed at direction changes
+	 * and at regular intervals along straight segments. This ensures we never click
+	 * a tile on the far side of a wall — we follow the path's turns.
+	 *
+	 * @param path       the full A* path (ordered from start toward end)
+	 * @param maxSpacing max tiles between waypoints on straight segments
+	 * @return list of waypoints (subset of path points)
+	 */
+	private List<WorldPoint> extractWaypoints(List<WorldPoint> path, int maxSpacing) {
+		List<WorldPoint> waypoints = new ArrayList<>();
+		if (path.isEmpty()) {
+			return waypoints;
+		}
+
+		int lastWaypointIdx = 0;
+		int prevDx = 0;
+		int prevDy = 0;
+
+		for (int i = 1; i < path.size(); i++) {
+			int dx = Integer.signum(path.get(i).getX() - path.get(i - 1).getX());
+			int dy = Integer.signum(path.get(i).getY() - path.get(i - 1).getY());
+
+			boolean directionChanged = (i > 1) && (dx != prevDx || dy != prevDy);
+			boolean maxDistReached = (i - lastWaypointIdx) >= maxSpacing;
+
+			if (directionChanged) {
+				// Place waypoint at the tile BEFORE the turn (last tile of the straight segment)
+				waypoints.add(path.get(i - 1));
+				lastWaypointIdx = i - 1;
+			} else if (maxDistReached) {
+				waypoints.add(path.get(i));
+				lastWaypointIdx = i;
+			}
+
+			prevDx = dx;
+			prevDy = dy;
+		}
+
+		// Always include the final path point
+		WorldPoint last = path.get(path.size() - 1);
+		if (waypoints.isEmpty() || !waypoints.get(waypoints.size() - 1).equals(last)) {
+			waypoints.add(last);
+		}
+
+		return waypoints;
+	}
+
 	// ===== Minimap clicking =====
 
-	private boolean clickAlongPath(List<WorldPoint> path, WorldPoint playerPos, MouseMovementProfile profile) {
-		// Walk backwards along the path to find the farthest point we can actually click on the minimap
+	/**
+	 * Check if a world point is safe to click — meaning neither the tile itself
+	 * nor any of its immediate neighbors are blocked. This prevents minimap clicks
+	 * from landing on or next to walls, which can cause the game engine to resolve
+	 * the click to the wrong side.
+	 */
+	private boolean isSafeClickTile(SceneSnapshot snapshot, WorldPoint wp) {
+		int sceneX = wp.getX() - snapshot.baseX;
+		int sceneY = wp.getY() - snapshot.baseY;
+
+		// Check the tile itself and all 8 neighbors
+		for (int dx = -1; dx <= 1; dx++) {
+			for (int dy = -1; dy <= 1; dy++) {
+				int nx = sceneX + dx;
+				int ny = sceneY + dy;
+				if (!isValidSceneTile(nx, ny)) {
+					return false;
+				}
+				if ((snapshot.flags[nx][ny] & MOVEMENT_BLOCKED) != 0) {
+					return false;
+				}
+			}
+		}
+		return true;
+	}
+
+	/**
+	 * Given a waypoint on a path, find the closest safe click target by walking
+	 * backwards along the path. Returns the waypoint itself if it's safe, or a
+	 * nearby path tile that has no blocked neighbors.
+	 */
+	private WorldPoint findSafeClickTarget(SceneSnapshot snapshot, List<WorldPoint> path, WorldPoint waypoint, WorldPoint playerPos) {
+		if (isSafeClickTile(snapshot, waypoint)) {
+			return waypoint;
+		}
+
+		// Find the waypoint's index in the path
+		int waypointIdx = -1;
 		for (int i = path.size() - 1; i >= 0; i--) {
-			WorldPoint wp = path.get(i);
+			if (path.get(i).equals(waypoint)) {
+				waypointIdx = i;
+				break;
+			}
+		}
+
+		if (waypointIdx < 0) {
+			return waypoint; // not found in path, return as-is
+		}
+
+		// Walk backwards along the path to find a safe tile
+		for (int i = waypointIdx - 1; i >= 0; i--) {
+			WorldPoint candidate = path.get(i);
+			if (candidate.distanceTo(playerPos) <= 1) {
+				break; // too close to player, stop searching
+			}
+			if (isSafeClickTile(snapshot, candidate)) {
+				log.debug("WEB_WALK: Waypoint {} near wall, using safer tile {} ({} tiles back)",
+					waypoint, candidate, waypointIdx - i);
+				return candidate;
+			}
+		}
+
+		// No safe tile found — return original (better than nothing)
+		log.debug("WEB_WALK: No safe alternative for waypoint {}, using as-is", waypoint);
+		return waypoint;
+	}
+
+	/**
+	 * Click the best waypoint on the path. Picks the farthest waypoint that is
+	 * within minimap range, ensuring we follow direction changes and never click
+	 * across walls. Waypoints near walls are shifted backwards along the path
+	 * to a safe tile.
+	 */
+	private boolean clickNextWaypoint(List<WorldPoint> path, WorldPoint playerPos, MouseMovementProfile profile) {
+		return clickNextWaypoint(null, path, playerPos, profile);
+	}
+
+	private boolean clickNextWaypoint(SceneSnapshot snapshot, List<WorldPoint> path, WorldPoint playerPos, MouseMovementProfile profile) {
+		// Extract waypoints: direction changes + max 12-tile straight segments
+		List<WorldPoint> waypoints = extractWaypoints(path, 12);
+
+		if (waypoints.isEmpty()) {
+			return false;
+		}
+
+		log.debug("WEB_WALK: Path has {} tiles, {} waypoints", path.size(), waypoints.size());
+
+		// Try waypoints from farthest to nearest — but these are at turns/intervals,
+		// so even the "farthest" one follows the path correctly
+		for (int i = waypoints.size() - 1; i >= 0; i--) {
+			WorldPoint wp = waypoints.get(i);
 			if (playerPos.distanceTo(wp) <= 1) {
 				continue;
 			}
-			if (clickMinimapWithRetry(wp, profile)) {
+
+			// If we have collision data, ensure the click target is safe (not near walls)
+			WorldPoint clickTarget = wp;
+			if (snapshot != null) {
+				clickTarget = findSafeClickTarget(snapshot, path, wp, playerPos);
+				if (clickTarget.distanceTo(playerPos) <= 1) {
+					continue; // safe target is too close to player
+				}
+			}
+
+			if (clickMinimapWithRetry(clickTarget, profile)) {
 				return true;
 			}
 		}
 
-		// If nothing on the path worked, try a very close point
+		// Last resort: click a close point on the raw path
 		if (path.size() >= 2) {
 			WorldPoint close = path.get(Math.min(3, path.size() - 1));
 			return clickMinimapWithRetry(close, profile);
@@ -634,6 +796,32 @@ public class WebWalker {
 		sceneX = Math.max(5, Math.min(SCENE_SIZE - 6, sceneX));
 		sceneY = Math.max(5, Math.min(SCENE_SIZE - 6, sceneY));
 
+		// If the target tile is blocked, search nearby for a walkable tile
+		if ((snapshot.flags[sceneX][sceneY] & MOVEMENT_BLOCKED) != 0) {
+			int bestX = sceneX;
+			int bestY = sceneY;
+			double bestDist = Double.MAX_VALUE;
+			for (int r = 1; r <= 3; r++) {
+				for (int ox = -r; ox <= r; ox++) {
+					for (int oy = -r; oy <= r; oy++) {
+						int nx = sceneX + ox;
+						int ny = sceneY + oy;
+						if (isValidSceneTile(nx, ny) && (snapshot.flags[nx][ny] & MOVEMENT_BLOCKED) == 0) {
+							double d = Math.sqrt(ox * ox + oy * oy);
+							if (d < bestDist) {
+								bestDist = d;
+								bestX = nx;
+								bestY = ny;
+							}
+						}
+					}
+				}
+				if (bestDist < Double.MAX_VALUE) break;
+			}
+			sceneX = bestX;
+			sceneY = bestY;
+		}
+
 		targetX = sceneX + snapshot.baseX;
 		targetY = sceneY + snapshot.baseY;
 
@@ -725,29 +913,62 @@ public class WebWalker {
 
 	// ===== Movement waiting =====
 
-	private void waitForPlayerToArrive(WorldPoint target, int timeoutMs) {
+	private boolean isPlayerMoving() {
+		Boolean moving = onClientThread(() ->
+			client.getLocalPlayer().getPoseAnimation() != client.getLocalPlayer().getIdlePoseAnimation());
+		return Boolean.TRUE.equals(moving);
+	}
+
+	/**
+	 * Wait for the player to arrive at an intermediate target, but also monitor
+	 * distance to the final destination. If during movement the player becomes
+	 * closer to the destination than the intermediate target is, break out early
+	 * so the main loop can re-path from the new, better position.
+	 */
+	private void waitAndMonitor(WorldPoint intermediateTarget, WorldPoint finalDestination, int timeoutMs) {
 		long deadline = System.currentTimeMillis() + timeoutMs;
 		WorldPoint lastPos = null;
 		int stuckCounter = 0;
+		int intermediateDistToDest = intermediateTarget.distanceTo(finalDestination);
 
-		sleep(300 + (int)(Math.random() * 200));
+		sleep(200 + (int)(Math.random() * 150));
 
 		while (System.currentTimeMillis() < deadline && !cancelled) {
 			WorldPoint current = getPlayerLocation();
 			if (current == null) {
 				break;
 			}
-			int dist = current.distanceTo(target);
 
-			if (dist <= 2) {
-				log.debug("WEB_WALK: Arrived near target {} (dist={})", target, dist);
+			int distToIntermediate = current.distanceTo(intermediateTarget);
+			int distToDest = current.distanceTo(finalDestination);
+
+			// Reached the intermediate target
+			if (distToIntermediate <= 2) {
+				log.debug("WEB_WALK: Arrived near intermediate target {} (dist={})", intermediateTarget, distToIntermediate);
 				return;
 			}
 
+			// Reached the final destination
+			if (distToDest <= 1) {
+				log.debug("WEB_WALK: Arrived at final destination during transit");
+				return;
+			}
+
+			// Mid-movement re-evaluation: if player is now closer to the destination
+			// than the intermediate target is, break out early to re-path from here.
+			// This handles cases like the GE where walking through an entrance
+			// puts you closer to the center than your original click target.
+			if (distToDest < intermediateDistToDest - 2 && isPlayerMoving()) {
+				log.info("WEB_WALK: Player closer to destination ({}) than intermediate target ({}) — re-pathing",
+					distToDest, intermediateDistToDest);
+				return;
+			}
+
+			// Stuck detection
 			if (current.equals(lastPos)) {
 				stuckCounter++;
-				if (stuckCounter >= 10) {
-					log.info("WEB_WALK: Player appears stuck at {}, breaking wait", current);
+				if (!isPlayerMoving() && stuckCounter >= 5) {
+					log.info("WEB_WALK: Player stopped at {} (not at target), breaking wait", current);
 					return;
 				}
 			} else {
@@ -758,18 +979,16 @@ public class WebWalker {
 			sleep(200);
 		}
 
-		log.debug("WEB_WALK: Wait for arrival timed out");
+		log.debug("WEB_WALK: Wait timed out");
 	}
 
 	private void waitForMovementToStop(int timeoutMs) {
 		long deadline = System.currentTimeMillis() + timeoutMs;
 
-		sleep(600);
+		sleep(400);
 
 		while (System.currentTimeMillis() < deadline && !cancelled) {
-			Boolean moving = onClientThread(() ->
-				client.getLocalPlayer().getPoseAnimation() != client.getLocalPlayer().getIdlePoseAnimation());
-			if (moving == null || !moving) {
+			if (!isPlayerMoving()) {
 				return;
 			}
 			sleep(100);
