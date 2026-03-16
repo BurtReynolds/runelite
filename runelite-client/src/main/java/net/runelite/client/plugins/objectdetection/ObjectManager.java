@@ -165,6 +165,9 @@ public class ObjectManager {
         WorldPoint location = gameObject.getWorldLocation();
         String key = getObjectKey(id, location);
 
+        // Remove stale entries at this location with a different ID (e.g. burner 13208 → 13209)
+        removeStaleEntriesAtLocation(id, location);
+
         long now = System.currentTimeMillis();
         GameObjectInfo existing = gameObjects.get(key);
 
@@ -443,6 +446,19 @@ public class ObjectManager {
     public void clear() {
         gameObjects.clear();
         npcs.clear();
+    }
+
+    /**
+     * Remove cache entries at the same location but with a different object ID.
+     * This handles objects that change ID in-place (e.g. incense burner 13208 "Light" → 13209 "Re-light").
+     */
+    private void removeStaleEntriesAtLocation(int currentId, WorldPoint location) {
+        String locationSuffix = String.format("_%d_%d_%d", location.getX(), location.getY(), location.getPlane());
+        String currentKey = getObjectKey(currentId, location);
+        gameObjects.entrySet().removeIf(entry -> {
+            String key = entry.getKey();
+            return !key.equals(currentKey) && key.endsWith(locationSuffix);
+        });
     }
 
     private String getObjectKey(int id, WorldPoint location) {

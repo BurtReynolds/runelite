@@ -199,6 +199,10 @@ public class ApiServerPlugin extends Plugin {
         app.get("/api/v1/interaction/dialog/options", this::handleGetDialogOptions);
         app.get("/api/v1/interaction/dialog/debug", this::handleDebugDialogWidgets);
 
+        // Skill guide endpoints
+        app.get("/api/v1/interaction/skill-guide/status", this::handleSkillGuideStatus);
+        app.post("/api/v1/interaction/skill-guide/close", this::handleSkillGuideClose);
+
         // Sub-menu interaction endpoints
         app.post("/api/v1/interaction/equipment/item/submenu-select", this::handleEquipmentItemSubMenuSelect);
         app.post("/api/v1/interaction/inventory/item/submenu-select", this::handleInventoryItemSubMenuSelect);
@@ -1347,6 +1351,35 @@ public class ApiServerPlugin extends Plugin {
         }
 
         ctx.json(interactionPlugin.debugScanDialogWidgets());
+    }
+
+    private void handleSkillGuideStatus(Context ctx) {
+        if (interactionPlugin == null) {
+            ctx.status(503).json(createError("Interaction plugin not loaded"));
+            return;
+        }
+
+        boolean open = interactionPlugin.isSkillGuideOpen();
+        ctx.json(Map.of("open", open));
+    }
+
+    private void handleSkillGuideClose(Context ctx) {
+        if (interactionPlugin == null) {
+            ctx.status(503).json(createError("Interaction plugin not loaded"));
+            return;
+        }
+
+        String profileStr = "NORMAL";
+        try {
+            var body = ctx.bodyAsClass(java.util.Map.class);
+            if (body != null && body.containsKey("profile")) {
+                profileStr = (String) body.get("profile");
+            }
+        } catch (Exception ignored) {}
+
+        MouseMovementProfile profile = MouseMovementProfile.fromString(profileStr);
+        boolean closed = interactionPlugin.closeSkillGuide(profile);
+        ctx.json(Map.of("success", closed));
     }
 
     private void handleGetMenuOptions(Context ctx) {

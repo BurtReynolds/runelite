@@ -318,7 +318,9 @@ public class InteractionPlugin extends Plugin {
 	}
 
 	/**
-	 * Interact with nearest object by name and action
+	 * Interact with nearest object by name and action.
+	 * If the nearest candidate's live right-click menu doesn't contain the exact action,
+	 * tries the next nearest candidate (handles stale cache entries).
 	 */
 	public boolean interactWithObject(String objectName, String action, MouseMovementProfile profile) {
 		if (objectDetectionPlugin == null) {
@@ -332,26 +334,36 @@ public class InteractionPlugin extends Plugin {
 			return false;
 		}
 
-		GameObjectInfo targetObject = null;
-		double minDistance = Double.MAX_VALUE;
 		WorldPoint playerLoc = client.getLocalPlayer().getWorldLocation();
 
+		// Collect all candidates with the cached action, sorted by distance
+		java.util.List<GameObjectInfo> candidates = new java.util.ArrayList<>();
 		for (GameObjectInfo obj : objects) {
 			if (obj.hasAction(action)) {
-				double distance = obj.distanceFrom(playerLoc);
-				if (distance < minDistance) {
-					minDistance = distance;
-					targetObject = obj;
-				}
+				candidates.add(obj);
 			}
 		}
+		candidates.sort(java.util.Comparator.comparingDouble((GameObjectInfo obj) -> obj.distanceFrom(playerLoc)));
 
-		if (targetObject == null) {
+		if (candidates.isEmpty()) {
 			log.warn("Object '{}' with action '{}' not found", objectName, action);
 			return false;
 		}
 
-		return interactWithObject(targetObject, profile);
+		// Try each candidate — if the live menu doesn't have the exact action, try the next one
+		for (GameObjectInfo candidate : candidates) {
+			log.info("Trying object '{}' at {} (distance: {})", candidate.getName(), candidate.getLocation(), (int) candidate.distanceFrom(playerLoc));
+			boolean selected = rightClickObjectAndSelect(candidate, action, profile);
+			if (selected) {
+				return true;
+			}
+			// Menu was dismissed, try the next candidate
+			log.info("Action '{}' not available on object at {} — trying next candidate", action, candidate.getLocation());
+			sleep(200 + (int) (Math.random() * 300));
+		}
+
+		log.warn("No object '{}' had action '{}' in its live menu", objectName, action);
+		return false;
 	}
 
 	/**
@@ -379,11 +391,8 @@ public class InteractionPlugin extends Plugin {
 			return false;
 		}
 
-		int jitterX = (int) ((Math.random() - 0.5) * 10);
-		int jitterY = (int) ((Math.random() - 0.5) * 10);
-
 		mouseMovement.moveAndClick(
-			new java.awt.Point(screenPoint.getX() + jitterX, screenPoint.getY() + jitterY),
+			new java.awt.Point(screenPoint.getX(), screenPoint.getY()),
 			profile
 		);
 
@@ -393,6 +402,7 @@ public class InteractionPlugin extends Plugin {
 
 	/**
 	 * Right-click an object and select a specific action from the context menu.
+	 * Uses exact match only — "Light" will NOT match "Re-light".
 	 * Use this when the desired action is NOT the left-click default.
 	 */
 	private boolean rightClickObjectAndSelect(GameObjectInfo objectInfo, String action, MouseMovementProfile profile) {
@@ -402,14 +412,30 @@ public class InteractionPlugin extends Plugin {
 			return false;
 		}
 
-		int jitterX = (int) ((Math.random() - 0.5) * 10);
-		int jitterY = (int) ((Math.random() - 0.5) * 10);
-		int x = screenPoint.getX() + jitterX;
-		int y = screenPoint.getY() + jitterY;
+		int x = screenPoint.getX();
+		int y = screenPoint.getY();
 
-		boolean selected = rightClickAndSelect(x, y, action, objectInfo.getName(), profile);
+		// Move to position and right-click
+		mouseMovement.moveMouse(new java.awt.Point(x, y), profile);
+		sleep(50 + (int) (Math.random() * 80));
+		mouseMovement.rightClick();
+
+		// Wait for menu to open
+		if (!waitForMenuOpen(2000)) {
+			log.warn("Right-click menu did not open within timeout for object '{}'", objectInfo.getName());
+			return false;
+		}
+
+		sleep(50 + (int) (Math.random() * 80));
+
+		// Use exact match to prevent "Light" matching "Re-light"
+		boolean selected = selectMenuOptionExact(action, objectInfo.getName(), profile);
 		if (selected) {
 			log.info("Right-click selected '{}' on object: {} at {}", action, objectInfo.getName(), objectInfo.getLocation());
+		} else {
+			log.info("Exact match for '{}' not found on object: {} — dismissing menu", action, objectInfo.getName());
+			// Dismiss the menu by pressing Escape
+			dismissMenu();
 		}
 		return selected;
 	}
@@ -448,23 +474,70 @@ public class InteractionPlugin extends Plugin {
 		return rightClickObjectAndSelect(targetObject, action, profile);
 	}
 
+	/**
+	 * Get a random screen point within the clickbox of a game object.
+	 * Falls back to localToCanvas if the live object or clickbox can't be found.
+	 * All scene/widget access runs on the client thread.
+	 */
 	private Point getObjectScreenPoint(GameObjectInfo objectInfo) {
-		WorldPoint worldLocation = objectInfo.getLocation();
+		return runOnClientThread(() -> {
+			WorldPoint worldLocation = objectInfo.getLocation();
 
-		int sceneX = worldLocation.getX() - client.getBaseX();
-		int sceneY = worldLocation.getY() - client.getBaseY();
+			int sceneX = worldLocation.getX() - client.getBaseX();
+			int sceneY = worldLocation.getY() - client.getBaseY();
 
-		if (sceneX < 0 || sceneX >= 104 || sceneY < 0 || sceneY >= 104) {
-			return null;
-		}
+			if (sceneX < 0 || sceneX >= 104 || sceneY < 0 || sceneY >= 104) {
+				return null;
+			}
 
-		net.runelite.api.coords.LocalPoint localPoint =
-			net.runelite.api.coords.LocalPoint.fromScene(sceneX, sceneY);
-		if (localPoint == null) {
-			return null;
-		}
+			// Try to find the live GameObject in the scene and use its clickbox
+			net.runelite.api.Scene scene = client.getScene();
+			if (scene != null) {
+				net.runelite.api.Tile[][][] tiles = scene.getTiles();
+				int plane = client.getPlane();
+				if (tiles != null && plane < tiles.length) {
+					// Search the object's tile and neighboring tiles (large objects span multiple)
+					for (int dx = -1; dx <= 3; dx++) {
+						for (int dy = -1; dy <= 3; dy++) {
+							int tx = sceneX + dx;
+							int ty = sceneY + dy;
+							if (tx < 0 || tx >= 104 || ty < 0 || ty >= 104) continue;
+							net.runelite.api.Tile tile = tiles[plane][tx][ty];
+							if (tile == null) continue;
+							for (net.runelite.api.GameObject gameObject : tile.getGameObjects()) {
+								if (gameObject == null) continue;
+								if (gameObject.getId() == objectInfo.getId()) {
+									java.awt.Shape clickbox = gameObject.getClickbox();
+									if (clickbox != null) {
+										java.awt.Rectangle bounds = clickbox.getBounds();
+										if (bounds.width > 0 && bounds.height > 0) {
+											// Pick a random point within the inner 80% of the clickbox
+											int marginX = (int)(bounds.width * 0.1);
+											int marginY = (int)(bounds.height * 0.1);
+											int rx = bounds.x + marginX + (int)(Math.random() * (bounds.width - 2 * marginX));
+											int ry = bounds.y + marginY + (int)(Math.random() * (bounds.height - 2 * marginY));
+											log.debug("Using clickbox for '{}': bounds={}x{} at ({},{}), click=({},{})",
+												objectInfo.getName(), bounds.width, bounds.height, bounds.x, bounds.y, rx, ry);
+											return new Point(rx, ry);
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
 
-		return net.runelite.api.Perspective.localToCanvas(client, localPoint, client.getPlane());
+			// Fallback: project the single tile coordinate to screen
+			log.debug("Clickbox not available for '{}', falling back to localToCanvas", objectInfo.getName());
+			net.runelite.api.coords.LocalPoint localPoint =
+				net.runelite.api.coords.LocalPoint.fromScene(sceneX, sceneY);
+			if (localPoint == null) {
+				return null;
+			}
+
+			return net.runelite.api.Perspective.localToCanvas(client, localPoint, client.getPlane());
+		});
 	}
 
 	/**
@@ -1600,6 +1673,20 @@ public class InteractionPlugin extends Plugin {
 	}
 
 	/**
+	 * Select a menu option using exact match only (no substring fallback).
+	 * Use this when substring matching could select the wrong action
+	 * (e.g., "Light" matching "Re-light").
+	 *
+	 * @param optionText the exact option text to match (case-insensitive)
+	 * @param targetText optional target text (substring match)
+	 * @param profile    mouse movement profile
+	 * @return true if the option was found and clicked
+	 */
+	public boolean selectMenuOptionExact(String optionText, String targetText, MouseMovementProfile profile) {
+		return selectMenuOptionInternal(optionText, targetText, profile, true);
+	}
+
+	/**
 	 * Select a menu option by option text and target text.
 	 * Both are matched case-insensitively as substring. Useful when multiple
 	 * entries share the same option (e.g., "Use" on different items).
@@ -1613,6 +1700,10 @@ public class InteractionPlugin extends Plugin {
 	 * @return true if the option was found and clicked
 	 */
 	public boolean selectMenuOption(String optionText, String targetText, MouseMovementProfile profile) {
+		return selectMenuOptionInternal(optionText, targetText, profile, false);
+	}
+
+	private boolean selectMenuOptionInternal(String optionText, String targetText, MouseMovementProfile profile, boolean exactOnly) {
 		// Step 1: Read menu state on client thread to find click coordinates
 		java.awt.Point clickTarget = runOnClientThread(() -> {
 			if (!client.isMenuOpen()) {
@@ -1647,8 +1738,8 @@ public class InteractionPlugin extends Plugin {
 				}
 			}
 
-			// Second pass: fall back to substring match if no exact match
-			if (matchIndex < 0) {
+			// Second pass: fall back to substring match if no exact match (unless exactOnly)
+			if (matchIndex < 0 && !exactOnly) {
 				for (int i = 0; i < entries.length; i++) {
 					MenuEntry entry = entries[i];
 					String entryOption = stripTags(entry.getOption()).toLowerCase();
@@ -1749,6 +1840,72 @@ public class InteractionPlugin extends Plugin {
 			sleep(50);
 		}
 		return true;
+	}
+
+	/**
+	 * Dismiss an open right-click menu by sending Escape key.
+	 */
+	private void dismissMenu() {
+		java.awt.Canvas canvas = client.getCanvas();
+		if (canvas == null) return;
+
+		java.awt.event.KeyEvent press = new java.awt.event.KeyEvent(
+			canvas, java.awt.event.KeyEvent.KEY_PRESSED,
+			System.currentTimeMillis(), 0,
+			java.awt.event.KeyEvent.VK_ESCAPE, java.awt.event.KeyEvent.CHAR_UNDEFINED
+		);
+		java.awt.event.KeyEvent release = new java.awt.event.KeyEvent(
+			canvas, java.awt.event.KeyEvent.KEY_RELEASED,
+			System.currentTimeMillis(), 0,
+			java.awt.event.KeyEvent.VK_ESCAPE, java.awt.event.KeyEvent.CHAR_UNDEFINED
+		);
+		canvas.dispatchEvent(press);
+		sleep(30);
+		canvas.dispatchEvent(release);
+		sleep(100);
+	}
+
+	/**
+	 * Check if a skill guide dialog is currently open (either V1 or V2).
+	 */
+	public boolean isSkillGuideOpen() {
+		return runOnClientThread(() -> {
+			// Check SkillGuideV2 (group 860)
+			Widget v2 = client.getWidget(InterfaceID.SKILL_GUIDE_V2, 0);
+			if (v2 != null && !v2.isHidden()) return true;
+			// Check SkillGuide V1 (group 214)
+			Widget v1 = client.getWidget(InterfaceID.SKILL_GUIDE, 0);
+			return v1 != null && !v1.isHidden();
+		});
+	}
+
+	/**
+	 * Close the skill guide dialog if it's open.
+	 * Tries SkillGuideV2 close button first, then V1, then falls back to Escape.
+	 */
+	public boolean closeSkillGuide(MouseMovementProfile profile) {
+		// Try V2 close button (group 860, child 4)
+		Boolean v2Open = runOnClientThread(() -> {
+			Widget v2 = client.getWidget(InterfaceID.SKILL_GUIDE_V2, 0);
+			return v2 != null && !v2.isHidden();
+		});
+		if (Boolean.TRUE.equals(v2Open)) {
+			log.info("Closing SkillGuideV2 dialog");
+			return clickWidgetByPackedId(InterfaceID.SkillGuideV2.CLOSE, profile);
+		}
+
+		// Try V1 close button (group 214, child 30)
+		Boolean v1Open = runOnClientThread(() -> {
+			Widget v1 = client.getWidget(InterfaceID.SKILL_GUIDE, 0);
+			return v1 != null && !v1.isHidden();
+		});
+		if (Boolean.TRUE.equals(v1Open)) {
+			log.info("Closing SkillGuide V1 dialog");
+			return clickWidgetByPackedId(InterfaceID.SkillGuide.CLOSE, profile);
+		}
+
+		log.info("No skill guide dialog open");
+		return false;
 	}
 
 	/**
@@ -1877,6 +2034,16 @@ public class InteractionPlugin extends Plugin {
 	 * This method can be called from any thread.
 	 */
 	public boolean openPlayerTab(PlayerTab tab, MouseMovementProfile profile) {
+		// Check if this tab is already active — don't click if it is
+		Boolean alreadyOpen = runOnClientThread(() -> {
+			int currentTab = client.getVarcIntValue(VarClientID.TOPLEVEL_PANEL);
+			return currentTab == tab.ordinal();
+		});
+		if (Boolean.TRUE.equals(alreadyOpen)) {
+			log.debug("Tab {} is already active, skipping click", tab);
+			return true;
+		}
+
 		java.awt.Point clickTarget = runOnClientThread(() -> {
 			Widget tabWidget = findTabWidget(tab);
 			if (tabWidget == null) {
@@ -2683,44 +2850,115 @@ public class InteractionPlugin extends Plugin {
 	}
 
 	/**
-	 * Withdraw a specific quantity of an item by using right-click "Withdraw-X" and typing the amount.
+	 * Withdraw a specific quantity of an item.
+	 * Right-clicks the item once, then checks the menu:
+	 *   - If "Withdraw-{amount}" exists (last X matches), clicks it directly.
+	 *   - Otherwise clicks "Withdraw-X" and types the amount in the chatbox.
 	 */
 	public boolean withdrawX(String itemName, int amount, MouseMovementProfile profile) {
-		if (!rightClickBankItemAndSelect(itemName, "Withdraw-X", profile)) {
-			return false;
+		// Find and right-click the bank item
+		Widget item = runOnClientThread(() -> findBankItemWidget(itemName));
+		if (item == null) return false;
+
+		Boolean visible = runOnClientThread(() -> isBankItemVisible(item));
+		if (!Boolean.TRUE.equals(visible)) {
+			log.info("Bank item '{}' not in visible area, scrolling...", itemName);
+			if (!scrollBankItemIntoView(item, profile)) {
+				return false;
+			}
 		}
 
-		// Wait for the chatbox input to appear
-		sleep(600 + (int)(Math.random() * 300));
+		Point itemPoint = runOnClientThread(() -> getWidgetScreenPoint(item));
+		if (itemPoint == null) return false;
 
-		// Type the amount and press enter
-		typeText(String.valueOf(amount));
-		sleep(100 + (int)(Math.random() * 100));
-		pressEnter();
+		int jitterX = (int) ((Math.random() - 0.5) * profile.jitterRadius * 2);
+		int jitterY = (int) ((Math.random() - 0.5) * profile.jitterRadius * 2);
+		int x = itemPoint.getX() + jitterX;
+		int y = itemPoint.getY() + jitterY;
 
-		log.info("Withdrawing {} x {}", amount, itemName);
-		return true;
+		// Right-click the item
+		mouseMovement.moveMouse(new java.awt.Point(x, y), profile);
+		sleep(50 + (int)(Math.random() * 80));
+		mouseMovement.rightClick();
+
+		if (!waitForMenuOpen(2000)) {
+			log.warn("Right-click menu did not open for bank item '{}'", itemName);
+			return false;
+		}
+		sleep(50 + (int)(Math.random() * 80));
+
+		// Try the direct "Withdraw-{amount}" option first
+		String directOption = "Withdraw-" + amount;
+		if (selectMenuOption(directOption, null, profile)) {
+			log.info("Withdrew {} x {} via direct menu option", amount, itemName);
+			return true;
+		}
+
+		// Menu is still open — try "Withdraw-X" and type the amount
+		if (selectMenuOption("Withdraw-X", null, profile)) {
+			sleep(600 + (int)(Math.random() * 300));
+			typeText(String.valueOf(amount));
+			sleep(100 + (int)(Math.random() * 100));
+			pressEnter();
+			log.info("Withdrew {} x {} via Withdraw-X input", amount, itemName);
+			return true;
+		}
+
+		// Neither option found — dismiss menu
+		log.warn("Could not find withdraw option for {} x '{}'", amount, itemName);
+		dismissMenu();
+		return false;
 	}
 
 	/**
-	 * Deposit a specific quantity of an item from the bank inventory panel
-	 * using right-click "Deposit-X" and typing the amount.
+	 * Deposit a specific quantity of an item from the bank inventory panel.
+	 * Right-clicks the item once, then checks the menu:
+	 *   - If "Deposit-{amount}" exists (last X matches), clicks it directly.
+	 *   - Otherwise clicks "Deposit-X" and types the amount in the chatbox.
 	 */
 	public boolean depositX(String itemName, int amount, MouseMovementProfile profile) {
-		if (!rightClickBankInventoryItemAndSelect(itemName, "Deposit-X", profile)) {
+		// Find and right-click the bank inventory item
+		Widget item = runOnClientThread(() -> findBankInventoryItemWidget(itemName));
+		if (item == null) return false;
+
+		Point itemPoint = runOnClientThread(() -> getWidgetScreenPoint(item));
+		if (itemPoint == null) return false;
+
+		int jitterX = (int) ((Math.random() - 0.5) * profile.jitterRadius * 2);
+		int jitterY = (int) ((Math.random() - 0.5) * profile.jitterRadius * 2);
+		int x = itemPoint.getX() + jitterX;
+		int y = itemPoint.getY() + jitterY;
+
+		mouseMovement.moveMouse(new java.awt.Point(x, y), profile);
+		sleep(50 + (int)(Math.random() * 80));
+		mouseMovement.rightClick();
+
+		if (!waitForMenuOpen(2000)) {
+			log.warn("Right-click menu did not open for bank inventory item '{}'", itemName);
 			return false;
 		}
+		sleep(50 + (int)(Math.random() * 80));
 
-		// Wait for the chatbox input to appear
-		sleep(600 + (int)(Math.random() * 300));
+		// Try the direct "Deposit-{amount}" option first
+		String directOption = "Deposit-" + amount;
+		if (selectMenuOption(directOption, null, profile)) {
+			log.info("Deposited {} x {} via direct menu option", amount, itemName);
+			return true;
+		}
 
-		// Type the amount and press enter
-		typeText(String.valueOf(amount));
-		sleep(100 + (int)(Math.random() * 100));
-		pressEnter();
+		// Menu is still open — try "Deposit-X" and type the amount
+		if (selectMenuOption("Deposit-X", null, profile)) {
+			sleep(600 + (int)(Math.random() * 300));
+			typeText(String.valueOf(amount));
+			sleep(100 + (int)(Math.random() * 100));
+			pressEnter();
+			log.info("Deposited {} x {} via Deposit-X input", amount, itemName);
+			return true;
+		}
 
-		log.info("Depositing {} x {}", amount, itemName);
-		return true;
+		log.warn("Could not find deposit option for {} x '{}'", amount, itemName);
+		dismissMenu();
+		return false;
 	}
 
 	/**
