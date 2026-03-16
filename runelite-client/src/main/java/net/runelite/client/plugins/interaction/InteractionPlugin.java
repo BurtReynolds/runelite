@@ -391,6 +391,63 @@ public class InteractionPlugin extends Plugin {
 		return true;
 	}
 
+	/**
+	 * Right-click an object and select a specific action from the context menu.
+	 * Use this when the desired action is NOT the left-click default.
+	 */
+	private boolean rightClickObjectAndSelect(GameObjectInfo objectInfo, String action, MouseMovementProfile profile) {
+		Point screenPoint = getObjectScreenPoint(objectInfo);
+		if (screenPoint == null) {
+			log.warn("Could not get screen coordinates for object");
+			return false;
+		}
+
+		int jitterX = (int) ((Math.random() - 0.5) * 10);
+		int jitterY = (int) ((Math.random() - 0.5) * 10);
+		int x = screenPoint.getX() + jitterX;
+		int y = screenPoint.getY() + jitterY;
+
+		boolean selected = rightClickAndSelect(x, y, action, objectInfo.getName(), profile);
+		if (selected) {
+			log.info("Right-click selected '{}' on object: {} at {}", action, objectInfo.getName(), objectInfo.getLocation());
+		}
+		return selected;
+	}
+
+	/**
+	 * Find nearest object by name that has the given action, then right-click and select it.
+	 */
+	private boolean findAndRightClickObject(String objectName, String action, MouseMovementProfile profile) {
+		if (objectDetectionPlugin == null) return false;
+
+		var objects = objectDetectionPlugin.getObjectsByName(objectName);
+		if (objects.isEmpty()) {
+			log.warn("Object '{}' not found", objectName);
+			return false;
+		}
+
+		GameObjectInfo targetObject = null;
+		double minDistance = Double.MAX_VALUE;
+		WorldPoint playerLoc = client.getLocalPlayer().getWorldLocation();
+
+		for (GameObjectInfo obj : objects) {
+			if (obj.hasAction(action)) {
+				double distance = obj.distanceFrom(playerLoc);
+				if (distance < minDistance) {
+					minDistance = distance;
+					targetObject = obj;
+				}
+			}
+		}
+
+		if (targetObject == null) {
+			log.warn("Object '{}' with action '{}' not found", objectName, action);
+			return false;
+		}
+
+		return rightClickObjectAndSelect(targetObject, action, profile);
+	}
+
 	private Point getObjectScreenPoint(GameObjectInfo objectInfo) {
 		WorldPoint worldLocation = objectInfo.getLocation();
 
@@ -850,6 +907,92 @@ public class InteractionPlugin extends Plugin {
 		}
 
 		return result;
+	}
+
+	/**
+	 * Debug: brute-force scan widget groups by ID range.
+	 * For each group, checks children 0-30 and reports text, sub-children, and actions.
+	 * This bypasses getWidgetRoots() which may not enumerate all groups.
+	 */
+	public java.util.Map<String, Object> debugWidgetGroupScan(int minGroup, int maxGroup) {
+		return runOnClientThread(() -> {
+			java.util.List<java.util.Map<String, Object>> groups = new java.util.ArrayList<>();
+
+			for (int groupId = minGroup; groupId <= maxGroup; groupId++) {
+				Widget w0 = client.getWidget(groupId, 0);
+				if (w0 == null) continue;
+
+				java.util.Map<String, Object> groupInfo = new java.util.LinkedHashMap<>();
+				groupInfo.put("groupId", groupId);
+				groupInfo.put("hidden", w0.isHidden());
+
+				java.util.List<java.util.Map<String, Object>> childInfoList = new java.util.ArrayList<>();
+				for (int childId = 0; childId <= 30; childId++) {
+					Widget w = client.getWidget(groupId, childId);
+					if (w == null) continue;
+
+					java.util.Map<String, Object> ci = new java.util.LinkedHashMap<>();
+					ci.put("childId", childId);
+					ci.put("hidden", w.isHidden());
+					ci.put("type", w.getType());
+					ci.put("width", w.getWidth());
+					ci.put("height", w.getHeight());
+
+					String text = w.getText();
+					if (text != null && !text.isEmpty()) ci.put("text", text);
+
+					Widget[] staticCh = w.getChildren();
+					Widget[] dynCh = w.getDynamicChildren();
+					int staticCount = staticCh != null ? staticCh.length : 0;
+					int dynCount = dynCh != null ? dynCh.length : 0;
+					if (staticCount > 0) ci.put("staticChildren", staticCount);
+					if (dynCount > 0) ci.put("dynamicChildren", dynCount);
+
+					java.util.List<String> texts = new java.util.ArrayList<>();
+					if (staticCh != null) {
+						for (int i = 0; i < Math.min(staticCh.length, 20); i++) {
+							if (staticCh[i] != null && staticCh[i].getText() != null && !staticCh[i].getText().isEmpty()) {
+								texts.add("s" + i + ": " + staticCh[i].getText());
+							}
+						}
+					}
+					if (dynCh != null) {
+						for (int i = 0; i < Math.min(dynCh.length, 20); i++) {
+							if (dynCh[i] != null && dynCh[i].getText() != null && !dynCh[i].getText().isEmpty()) {
+								texts.add("d" + i + ": " + dynCh[i].getText());
+							}
+						}
+					}
+					if (!texts.isEmpty()) ci.put("childTexts", texts);
+
+					java.util.List<String> actions = new java.util.ArrayList<>();
+					if (staticCh != null) {
+						for (int i = 0; i < Math.min(staticCh.length, 20); i++) {
+							if (staticCh[i] != null) {
+								String[] acts = staticCh[i].getActions();
+								if (acts != null) {
+									for (String a : acts) {
+										if (a != null && !a.isEmpty()) actions.add("s" + i + ": " + a);
+									}
+								}
+							}
+						}
+					}
+					if (!actions.isEmpty()) ci.put("childActions", actions);
+
+					childInfoList.add(ci);
+				}
+
+				groupInfo.put("children", childInfoList);
+				groups.add(groupInfo);
+			}
+
+			java.util.Map<String, Object> report = new java.util.LinkedHashMap<>();
+			report.put("scannedRange", minGroup + "-" + maxGroup);
+			report.put("groupsFound", groups.size());
+			report.put("groups", groups);
+			return report;
+		});
 	}
 
 	/**
@@ -3416,6 +3559,525 @@ public class InteractionPlugin extends Plugin {
 			worldList.add(info);
 		}
 		return worldList;
+	}
+
+	// ===== SPIRIT TREE & FAIRY RING =====
+
+	// Fairy ring dial mappings: varbit value → letter
+	private static final String[] FAIRY_LEFT_DIAL = {"A", "D", "C", "B"};
+	private static final String[] FAIRY_MIDDLE_DIAL = {"I", "L", "K", "J"};
+	private static final String[] FAIRY_RIGHT_DIAL = {"P", "S", "R", "Q"};
+
+	/**
+	 * Travel via a spirit tree. Clicks the nearest spirit tree with "Travel" action,
+	 * waits for the destination dialog, and selects the specified destination.
+	 *
+	 * @param destination the destination name (substring match, e.g., "Grand Exchange", "Gnome Stronghold")
+	 * @param profile     mouse movement profile
+	 * @return true if the travel was initiated
+	 */
+	public boolean travelSpiritTree(String destination, MouseMovementProfile profile) {
+		log.info("Spirit tree travel to '{}'", destination);
+
+		// Click the spirit tree object — try multiple name+action combinations
+		// Regular spirit trees use "Travel"; POH spiritual fairy tree uses "Tree"
+		String[] spiritTreeNames = {"Spirit tree", "Spirit Tree", "Spiritual fairy tree", "Spiritual Fairy Tree"};
+		String[] spiritTreeActions = {"Travel", "Tree"};
+		boolean clicked = false;
+		for (String action : spiritTreeActions) {
+			for (String name : spiritTreeNames) {
+				clicked = interactWithObject(name, action, profile);
+				if (clicked) {
+					log.info("Clicked spirit tree '{}' with action '{}'", name, action);
+					break;
+				}
+			}
+			if (clicked) break;
+		}
+		if (!clicked) {
+			// Last resort: find any nearby object with spirit/fairy in name and a travel-like action
+			log.info("Trying fallback: searching all nearby objects for spirit tree");
+			if (objectDetectionPlugin != null) {
+				var nearby = objectDetectionPlugin.getObjectsNearby(20);
+				for (var obj : nearby) {
+					String objNameLower = obj.getName().toLowerCase();
+					if (objNameLower.contains("spirit") || objNameLower.contains("fairy tree")) {
+						log.info("Found candidate: '{}' at {} actions={}", obj.getName(), obj.getLocation(), obj.getActions());
+						for (String action : new String[]{"Travel", "Tree"}) {
+							if (obj.hasAction(action)) {
+								clicked = interactWithObject(obj, profile);
+								if (clicked) {
+									log.info("Clicked spirit tree via fallback: '{}' action '{}'", obj.getName(), action);
+									break;
+								}
+							}
+						}
+						if (clicked) break;
+					}
+				}
+			}
+		}
+		if (!clicked) {
+			log.warn("Could not find or click a Spirit tree");
+			return false;
+		}
+
+		// Wait for the spirit tree location list to appear and select destination
+		sleep(1500 + (int)(Math.random() * 500));
+		boolean selected = waitAndSelectSpiritTreeDestination(destination, 8000, profile);
+		if (!selected) {
+			log.warn("Failed to select spirit tree destination '{}'", destination);
+			return false;
+		}
+
+		log.info("Spirit tree travel to '{}' initiated", destination);
+		return true;
+	}
+
+	/**
+	 * Wait for the spirit tree location list interface to appear, then click the destination.
+	 * The spirit tree uses a custom widget (NOT a standard chatbox dialog).
+	 * We find it dynamically by scanning widget groups 0-900 for one containing
+	 * "Spirit Tree Locations" in its children's text.
+	 */
+	private boolean waitAndSelectSpiritTreeDestination(String destination, int timeoutMs, MouseMovementProfile profile) {
+		long deadline = System.currentTimeMillis() + timeoutMs;
+
+		// Step 1: Poll until we find the spirit tree widget by searching for its title text
+		Point clickPoint = null;
+		while (System.currentTimeMillis() < deadline) {
+			clickPoint = runOnClientThread(() -> {
+				// Scan widget groups to find the spirit tree interface
+				for (int groupId = 0; groupId <= 900; groupId++) {
+					Widget w0 = client.getWidget(groupId, 0);
+					if (w0 == null || w0.isHidden()) continue;
+
+					// Check children of this group for "Spirit Tree Locations" title
+					boolean isSpiritTreeInterface = false;
+					for (int childId = 0; childId <= 10; childId++) {
+						Widget w = client.getWidget(groupId, childId);
+						if (w == null) continue;
+
+						// Check the widget's own text and its sub-children for the title
+						if (containsText(w, "Spirit Tree Locations")) {
+							isSpiritTreeInterface = true;
+							break;
+						}
+					}
+
+					if (!isSpiritTreeInterface) continue;
+					log.info("Found spirit tree interface in widget group {}", groupId);
+
+					// Now search this group's children for the destination text
+					String search = destination.toLowerCase();
+					for (int childId = 0; childId <= 30; childId++) {
+						Widget parent = client.getWidget(groupId, childId);
+						if (parent == null || parent.isHidden()) continue;
+
+						// Search static children
+						Widget[] children = parent.getChildren();
+						if (children != null) {
+							for (Widget child : children) {
+								if (child != null && !child.isHidden() && child.getText() != null) {
+									String raw = child.getText().replaceAll("<[^>]+>", "");
+									if (raw.toLowerCase().contains(search)) {
+										log.info("Found spirit tree destination '{}' in group {} widget text: '{}'",
+											destination, groupId, raw);
+										return getWidgetScreenPoint(child);
+									}
+								}
+							}
+						}
+
+						// Search dynamic children
+						Widget[] dynChildren = parent.getDynamicChildren();
+						if (dynChildren != null) {
+							for (Widget child : dynChildren) {
+								if (child != null && !child.isHidden() && child.getText() != null) {
+									String raw = child.getText().replaceAll("<[^>]+>", "");
+									if (raw.toLowerCase().contains(search)) {
+										log.info("Found spirit tree destination '{}' in group {} dynamic widget: '{}'",
+											destination, groupId, raw);
+										return getWidgetScreenPoint(child);
+									}
+								}
+							}
+						}
+					}
+
+					// If we found the interface but not the destination, log available options
+					StringBuilder available = new StringBuilder();
+					for (int childId = 0; childId <= 30; childId++) {
+						Widget parent = client.getWidget(groupId, childId);
+						if (parent == null || parent.isHidden()) continue;
+						Widget[] children = parent.getChildren();
+						if (children != null) {
+							for (Widget child : children) {
+								if (child != null && !child.isHidden() && child.getText() != null && !child.getText().isEmpty()) {
+									String raw = child.getText().replaceAll("<[^>]+>", "");
+									if (!raw.isEmpty()) {
+										if (available.length() > 0) available.append(", ");
+										available.append(raw);
+									}
+								}
+							}
+						}
+					}
+					log.warn("Spirit tree destination '{}' not found in group {}. Available: [{}]", destination, groupId, available);
+					return null;
+				}
+				return null;
+			});
+
+			if (clickPoint != null) break;
+			sleep(200);
+		}
+
+		if (clickPoint == null) {
+			log.warn("Spirit tree interface did not appear or destination '{}' not found within {}ms", destination, timeoutMs);
+			return false;
+		}
+
+		sleep(100 + (int)(Math.random() * 100));
+
+		// Step 2: Click the destination
+		int jitterX = (int) ((Math.random() - 0.5) * 8);
+		int jitterY = (int) ((Math.random() - 0.5) * 4);
+		mouseMovement.moveAndClick(
+			new java.awt.Point(clickPoint.getX() + jitterX, clickPoint.getY() + jitterY),
+			profile
+		);
+		return true;
+	}
+
+	/**
+	 * Check if a widget or any of its immediate children contain the given text (case-insensitive).
+	 */
+	private boolean containsText(Widget widget, String text) {
+		String search = text.toLowerCase();
+		if (widget.getText() != null && widget.getText().toLowerCase().contains(search)) return true;
+
+		Widget[] children = widget.getChildren();
+		if (children != null) {
+			for (Widget child : children) {
+				if (child != null && child.getText() != null && child.getText().toLowerCase().contains(search)) return true;
+			}
+		}
+		Widget[] dynChildren = widget.getDynamicChildren();
+		if (dynChildren != null) {
+			for (Widget child : dynChildren) {
+				if (child != null && child.getText() != null && child.getText().toLowerCase().contains(search)) return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Travel via a fairy ring by dialing a 3-letter code and confirming.
+	 * Clicks the nearest fairy ring with "Configure" action, sets each dial
+	 * to the correct letter, then clicks confirm.
+	 *
+	 * @param code    3-letter fairy ring code (e.g., "DKR", "CKS", "AJR")
+	 * @param profile mouse movement profile
+	 * @return true if the teleport was initiated
+	 */
+	public boolean travelFairyRing(String code, MouseMovementProfile profile) {
+		if (code == null || code.length() != 3) {
+			log.warn("Invalid fairy ring code: '{}' (must be 3 letters)", code);
+			return false;
+		}
+		String upper = code.toUpperCase();
+		log.info("Fairy ring travel to code '{}'", upper);
+
+		// Find the target dial positions for each letter
+		int targetLeft = findDialPosition(FAIRY_LEFT_DIAL, String.valueOf(upper.charAt(0)));
+		int targetMiddle = findDialPosition(FAIRY_MIDDLE_DIAL, String.valueOf(upper.charAt(1)));
+		int targetRight = findDialPosition(FAIRY_RIGHT_DIAL, String.valueOf(upper.charAt(2)));
+
+		if (targetLeft < 0 || targetMiddle < 0 || targetRight < 0) {
+			log.warn("Invalid fairy ring code '{}': letters must be from A/B/C/D, I/J/K/L, P/Q/R/S", upper);
+			return false;
+		}
+
+		// Click the fairy ring — always right-click to select Configure/Ring-configure
+		// Left-click on regular fairy rings goes to Zanaris; left-click on spiritual fairy tree does Travel
+		String[] fairyNames = {"Fairy ring", "Spiritual fairy tree", "Spiritual Fairy Tree"};
+		String[] configureActions = {"Configure", "Ring-configure"};
+		boolean clicked = false;
+
+		for (String action : configureActions) {
+			for (String name : fairyNames) {
+				clicked = findAndRightClickObject(name, action, profile);
+				if (clicked) { log.info("Right-click selected '{}' on '{}'", action, name); break; }
+			}
+			if (clicked) break;
+		}
+		if (!clicked) {
+			log.warn("Could not find or click a Fairy ring");
+			return false;
+		}
+
+		// Wait for the fairy ring interface to open
+		sleep(1500 + (int)(Math.random() * 500));
+		if (!waitForFairyRingInterface(8000)) {
+			log.warn("Fairy ring interface did not open");
+			return false;
+		}
+		sleep(300 + (int)(Math.random() * 200));
+
+		// Set each dial to the correct position
+		if (!setFairyDial(1, targetLeft, InterfaceID.Fairyrings._1_CLOCKWISE,
+				InterfaceID.Fairyrings._1_ANTICLOCKWISE, net.runelite.api.gameval.VarbitID.FAIRYRING_1, profile)) {
+			return false;
+		}
+		sleep(200 + (int)(Math.random() * 150));
+
+		if (!setFairyDial(2, targetMiddle, InterfaceID.Fairyrings._2_CLOCKWISE,
+				InterfaceID.Fairyrings._2_ANTICLOCKWISE, net.runelite.api.gameval.VarbitID.FAIRYRING_2, profile)) {
+			return false;
+		}
+		sleep(200 + (int)(Math.random() * 150));
+
+		if (!setFairyDial(3, targetRight, InterfaceID.Fairyrings._3_CLOCKWISE,
+				InterfaceID.Fairyrings._3_ANTICLOCKWISE, net.runelite.api.gameval.VarbitID.FAIRYRING_3, profile)) {
+			return false;
+		}
+		sleep(300 + (int)(Math.random() * 200));
+
+		// Click confirm/teleport
+		java.awt.Point confirmPoint = runOnClientThread(() -> {
+			Widget confirm = client.getWidget(InterfaceID.Fairyrings.CONFIRM);
+			if (confirm != null && !confirm.isHidden()) {
+				return getWidgetClickPoint(confirm, profile);
+			}
+			return null;
+		});
+		if (confirmPoint == null) {
+			log.warn("Fairy ring confirm button not found");
+			return false;
+		}
+		mouseMovement.moveAndClick(confirmPoint, profile);
+		log.info("Fairy ring teleport to '{}' confirmed", upper);
+		return true;
+	}
+
+	/**
+	 * Travel via a fairy ring using its travel log (for previously visited codes).
+	 * Clicks "Last-destination" on the fairy ring, or opens the log and selects
+	 * the code from there.
+	 */
+	public boolean travelFairyRingFromLog(String code, MouseMovementProfile profile) {
+		if (code == null || code.length() != 3) {
+			log.warn("Invalid fairy ring code: '{}'", code);
+			return false;
+		}
+		String upper = code.toUpperCase();
+		log.info("Fairy ring travel from log to '{}'", upper);
+
+		// Click fairy ring — always right-click to select Configure/Ring-configure
+		String[] fairyNames = {"Fairy ring", "Spiritual fairy tree", "Spiritual Fairy Tree"};
+		String[] configureActions = {"Configure", "Ring-configure"};
+		boolean clicked = false;
+
+		for (String action : configureActions) {
+			for (String name : fairyNames) {
+				clicked = findAndRightClickObject(name, action, profile);
+				if (clicked) { log.info("Right-click selected '{}' on '{}'", action, name); break; }
+			}
+			if (clicked) break;
+		}
+		if (!clicked) {
+			log.warn("Could not find or click a Fairy ring");
+			return false;
+		}
+
+		sleep(1500 + (int)(Math.random() * 500));
+		if (!waitForFairyRingInterface(8000)) {
+			log.warn("Fairy ring interface did not open");
+			return false;
+		}
+		sleep(300 + (int)(Math.random() * 200));
+
+		// Try to find and click the code in the travel log
+		java.awt.Point logEntry = runOnClientThread(() -> {
+			// The fairy ring log entries are widgets in the FairyringsLog group
+			// Each code has a widget with actions like "Use code"
+			int logGroup = InterfaceID.FAIRYRINGS_LOG;
+			Widget logRoot = client.getWidget(logGroup, 0);
+			if (logRoot == null || logRoot.isHidden()) {
+				return null;
+			}
+			// Search for the code widget by checking children
+			Widget frame = client.getWidget(InterfaceID.FairyringsLog.FRAME);
+			if (frame == null) return null;
+			Widget[] children = frame.getDynamicChildren();
+			if (children == null) children = frame.getStaticChildren();
+			if (children == null) return null;
+
+			String search = upper;
+			for (Widget child : children) {
+				if (child == null || child.isHidden()) continue;
+				String text = child.getText();
+				String[] actions = child.getActions();
+				if (text != null && text.contains(search) && actions != null) {
+					for (String action : actions) {
+						if (action != null && action.contains("Use code")) {
+							return getWidgetClickPoint(child, profile);
+						}
+					}
+				}
+			}
+			return null;
+		});
+
+		if (logEntry != null) {
+			mouseMovement.moveAndClick(logEntry, profile);
+			log.info("Selected fairy ring code '{}' from travel log", upper);
+			return true;
+		}
+
+		// Fallback: set the dials manually
+		log.info("Code '{}' not found in travel log, setting dials manually", upper);
+		return travelFairyRingByDials(upper, profile);
+	}
+
+	private boolean travelFairyRingByDials(String code, MouseMovementProfile profile) {
+		int targetLeft = findDialPosition(FAIRY_LEFT_DIAL, String.valueOf(code.charAt(0)));
+		int targetMiddle = findDialPosition(FAIRY_MIDDLE_DIAL, String.valueOf(code.charAt(1)));
+		int targetRight = findDialPosition(FAIRY_RIGHT_DIAL, String.valueOf(code.charAt(2)));
+
+		if (targetLeft < 0 || targetMiddle < 0 || targetRight < 0) {
+			return false;
+		}
+
+		if (!setFairyDial(1, targetLeft, InterfaceID.Fairyrings._1_CLOCKWISE,
+				InterfaceID.Fairyrings._1_ANTICLOCKWISE, net.runelite.api.gameval.VarbitID.FAIRYRING_1, profile)) {
+			return false;
+		}
+		sleep(200 + (int)(Math.random() * 150));
+
+		if (!setFairyDial(2, targetMiddle, InterfaceID.Fairyrings._2_CLOCKWISE,
+				InterfaceID.Fairyrings._2_ANTICLOCKWISE, net.runelite.api.gameval.VarbitID.FAIRYRING_2, profile)) {
+			return false;
+		}
+		sleep(200 + (int)(Math.random() * 150));
+
+		if (!setFairyDial(3, targetRight, InterfaceID.Fairyrings._3_CLOCKWISE,
+				InterfaceID.Fairyrings._3_ANTICLOCKWISE, net.runelite.api.gameval.VarbitID.FAIRYRING_3, profile)) {
+			return false;
+		}
+		sleep(300 + (int)(Math.random() * 200));
+
+		java.awt.Point confirmPoint = runOnClientThread(() -> {
+			Widget confirm = client.getWidget(InterfaceID.Fairyrings.CONFIRM);
+			if (confirm != null && !confirm.isHidden()) {
+				return getWidgetClickPoint(confirm, profile);
+			}
+			return null;
+		});
+		if (confirmPoint == null) {
+			log.warn("Fairy ring confirm button not found");
+			return false;
+		}
+		mouseMovement.moveAndClick(confirmPoint, profile);
+		log.info("Fairy ring teleport to '{}' confirmed via dials", code);
+		return true;
+	}
+
+	private int findDialPosition(String[] dial, String letter) {
+		for (int i = 0; i < dial.length; i++) {
+			if (dial[i].equalsIgnoreCase(letter)) {
+				return i;
+			}
+		}
+		return -1;
+	}
+
+	private boolean waitForFairyRingInterface(int timeoutMs) {
+		long deadline = System.currentTimeMillis() + timeoutMs;
+		while (System.currentTimeMillis() < deadline) {
+			Boolean open = runOnClientThread(() -> {
+				Widget confirm = client.getWidget(InterfaceID.Fairyrings.CONFIRM);
+				return confirm != null && !confirm.isHidden();
+			});
+			if (Boolean.TRUE.equals(open)) {
+				return true;
+			}
+			sleep(200);
+		}
+		return false;
+	}
+
+	/**
+	 * Set a fairy ring dial to the target position by clicking clockwise/anticlockwise.
+	 * Each dial has 4 positions (0-3). Finds the shortest rotation direction.
+	 */
+	private boolean setFairyDial(int dialNum, int targetPos, int cwPackedId, int ccwPackedId,
+								  int varbitId, MouseMovementProfile profile) {
+		for (int attempt = 0; attempt < 8; attempt++) {
+			Integer currentPos = runOnClientThread(() -> client.getVarbitValue(varbitId));
+			if (currentPos == null) {
+				log.warn("Could not read fairy ring dial {} position", dialNum);
+				return false;
+			}
+
+			if (currentPos == targetPos) {
+				log.debug("Fairy dial {} already at position {} — done", dialNum, targetPos);
+				return true;
+			}
+
+			// Calculate shortest rotation: clockwise vs anticlockwise
+			int cwSteps = (targetPos - currentPos + 4) % 4;
+			int ccwSteps = (currentPos - targetPos + 4) % 4;
+			boolean clockwise = cwSteps <= ccwSteps;
+			int packedId = clockwise ? cwPackedId : ccwPackedId;
+
+			log.debug("Fairy dial {}: current={}, target={}, rotating {} ({} steps)",
+				dialNum, currentPos, targetPos, clockwise ? "CW" : "CCW",
+				clockwise ? cwSteps : ccwSteps);
+
+			java.awt.Point clickPt = runOnClientThread(() -> {
+				int groupId = packedId >> 16;
+				int childId = packedId & 0xFFFF;
+				Widget btn = client.getWidget(groupId, childId);
+				if (btn != null && !btn.isHidden()) {
+					return getWidgetClickPoint(btn, profile);
+				}
+				return null;
+			});
+
+			if (clickPt == null) {
+				log.warn("Fairy ring dial {} rotation button not found", dialNum);
+				return false;
+			}
+
+			mouseMovement.moveAndClick(clickPt, profile);
+			sleep(600 + (int)(Math.random() * 300));
+		}
+
+		log.warn("Failed to set fairy ring dial {} after 8 attempts", dialNum);
+		return false;
+	}
+
+	/**
+	 * Get the current fairy ring code from dial varbits.
+	 */
+	public java.util.Map<String, Object> getFairyRingState() {
+		return runOnClientThread(() -> {
+			java.util.Map<String, Object> state = new java.util.LinkedHashMap<>();
+			int left = client.getVarbitValue(net.runelite.api.gameval.VarbitID.FAIRYRING_1);
+			int middle = client.getVarbitValue(net.runelite.api.gameval.VarbitID.FAIRYRING_2);
+			int right = client.getVarbitValue(net.runelite.api.gameval.VarbitID.FAIRYRING_3);
+			String currentCode = FAIRY_LEFT_DIAL[left] + FAIRY_MIDDLE_DIAL[middle] + FAIRY_RIGHT_DIAL[right];
+			state.put("currentCode", currentCode);
+			state.put("leftDial", left);
+			state.put("middleDial", middle);
+			state.put("rightDial", right);
+
+			Widget confirm = client.getWidget(InterfaceID.Fairyrings.CONFIRM);
+			state.put("interfaceOpen", confirm != null && !confirm.isHidden());
+			return state;
+		});
 	}
 
 	// ===== LOGIN =====

@@ -356,6 +356,12 @@ public class ApiServerPlugin extends Plugin {
         app.post("/api/v1/break/trigger", this::handleBreakTrigger);
         app.post("/api/v1/break/skip", this::handleBreakSkip);
 
+        // Spirit tree & fairy ring endpoints
+        app.post("/api/v1/interaction/spirit-tree", this::handleSpiritTreeTravel);
+        app.post("/api/v1/interaction/fairy-ring", this::handleFairyRingTravel);
+        app.get("/api/v1/fairy-ring/state", this::handleGetFairyRingState);
+        app.get("/api/v1/debug/widget-scan", this::handleDebugWidgetScan);
+
         // Root endpoint
         app.get("/", this::handleRoot);
 
@@ -542,6 +548,9 @@ public class ApiServerPlugin extends Plugin {
         endpoints.put("breakStatus", "GET /api/v1/break/status");
         endpoints.put("breakTrigger", "POST /api/v1/break/trigger");
         endpoints.put("breakSkip", "POST /api/v1/break/skip");
+        endpoints.put("spiritTreeTravel", "POST /api/v1/interaction/spirit-tree {destination, profile?}");
+        endpoints.put("fairyRingTravel", "POST /api/v1/interaction/fairy-ring {code, profile?}");
+        endpoints.put("fairyRingState", "GET /api/v1/fairy-ring/state");
 
         info.put("endpoints", endpoints);
         info.put("websocket", "ws://localhost:7070/ws/events");
@@ -2693,6 +2702,70 @@ public class ApiServerPlugin extends Plugin {
             ctx.json(Map.of("success", success, "world", world));
         } catch (Exception e) {
             ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    // ===== Spirit Tree & Fairy Ring Handlers =====
+
+    private void handleSpiritTreeTravel(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            @SuppressWarnings("unchecked") Map<String, Object> body = ctx.bodyAsClass(Map.class);
+            String destination = (String) body.get("destination");
+            if (destination == null || destination.isEmpty()) {
+                ctx.status(400).json(createError("'destination' is required (e.g., 'Grand Exchange', 'Gnome Stronghold')"));
+                return;
+            }
+            MouseMovementProfile profile = MouseMovementProfile.fromString(
+                (String) body.getOrDefault("profile", "NORMAL"));
+            log.info("Spirit tree travel request: destination='{}', profile='{}'", destination, profile);
+            boolean success = interactionPlugin.travelSpiritTree(destination, profile);
+            Map<String, Object> response = new java.util.LinkedHashMap<>();
+            response.put("success", success);
+            response.put("destination", destination);
+            ctx.json(response);
+        } catch (Exception e) {
+            log.error("Spirit tree travel error", e);
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    private void handleFairyRingTravel(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            @SuppressWarnings("unchecked") Map<String, Object> body = ctx.bodyAsClass(Map.class);
+            String code = (String) body.get("code");
+            if (code == null || code.length() != 3) {
+                ctx.status(400).json(createError("'code' is required (3-letter fairy ring code, e.g., 'DKR', 'CKS')"));
+                return;
+            }
+            MouseMovementProfile profile = MouseMovementProfile.fromString(
+                (String) body.getOrDefault("profile", "NORMAL"));
+            boolean success = interactionPlugin.travelFairyRing(code.toUpperCase(), profile);
+            ctx.json(Map.of("success", success, "code", code.toUpperCase()));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    private void handleGetFairyRingState(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        ctx.json(interactionPlugin.getFairyRingState());
+    }
+
+    private void handleDebugWidgetScan(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            int minGroup = 0;
+            int maxGroup = 900;
+            String minStr = ctx.queryParam("min");
+            String maxStr = ctx.queryParam("max");
+            if (minStr != null) try { minGroup = Integer.parseInt(minStr); } catch (NumberFormatException ignored) {}
+            if (maxStr != null) try { maxGroup = Integer.parseInt(maxStr); } catch (NumberFormatException ignored) {}
+            ctx.json(interactionPlugin.debugWidgetGroupScan(minGroup, maxGroup));
+        } catch (Exception e) {
+            log.error("Debug widget scan error", e);
+            ctx.status(500).json(createError("Scan error: " + e.getMessage()));
         }
     }
 

@@ -134,12 +134,28 @@ public class ObjectManager {
         }
     }
 
+    private ObjectComposition resolveComposition(ObjectComposition composition) {
+        if (composition != null && composition.getImpostorIds() != null) {
+            try {
+                ObjectComposition impostor = composition.getImpostor();
+                if (impostor != null) {
+                    return impostor;
+                }
+            } catch (Exception e) {
+                log.debug("Failed to resolve impostor for object composition: {}", e.getMessage());
+            }
+        }
+        return composition;
+    }
+
     private void cacheGameObject(GameObject gameObject) {
         int id = gameObject.getId();
         ObjectComposition composition = client.getObjectDefinition(id);
         if (composition == null) {
             return;
         }
+
+        composition = resolveComposition(composition);
 
         String name = composition.getName();
         if (name == null || name.equals("null")) {
@@ -170,7 +186,13 @@ public class ObjectManager {
     private void cacheDecorativeObject(DecorativeObject obj) {
         int id = obj.getId();
         ObjectComposition composition = client.getObjectDefinition(id);
-        if (composition == null || composition.getName() == null) {
+        if (composition == null) {
+            return;
+        }
+
+        composition = resolveComposition(composition);
+
+        if (composition.getName() == null || composition.getName().equals("null")) {
             return;
         }
 
@@ -197,7 +219,13 @@ public class ObjectManager {
     private void cacheWallObject(WallObject obj) {
         int id = obj.getId();
         ObjectComposition composition = client.getObjectDefinition(id);
-        if (composition == null || composition.getName() == null) {
+        if (composition == null) {
+            return;
+        }
+
+        composition = resolveComposition(composition);
+
+        if (composition.getName() == null || composition.getName().equals("null")) {
             return;
         }
 
@@ -224,7 +252,13 @@ public class ObjectManager {
     private void cacheGroundObject(GroundObject obj) {
         int id = obj.getId();
         ObjectComposition composition = client.getObjectDefinition(id);
-        if (composition == null || composition.getName() == null) {
+        if (composition == null) {
+            return;
+        }
+
+        composition = resolveComposition(composition);
+
+        if (composition.getName() == null || composition.getName().equals("null")) {
             return;
         }
 
