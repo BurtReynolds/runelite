@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019, Liam Edwards <http://github.com/Spedwards>
+ * Copyright (c) 2021, Jordan Atwood <nightfirecat@nightfirec.at>
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -22,55 +22,24 @@
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
-package net.runelite.client.plugins.worldhopper;
+package net.runelite.client.plugins.itemstats.special;
 
-import lombok.Getter;
-import lombok.RequiredArgsConstructor;
-import net.runelite.http.api.worlds.WorldRegion;
+import net.runelite.api.Client;
+import net.runelite.client.plugins.itemstats.StatBoost;
+import static net.runelite.client.plugins.itemstats.stats.Stats.HITPOINTS;
 
-@RequiredArgsConstructor
-enum RegionFilterMode
+public class LocatorOrb extends StatBoost
 {
-	AUSTRALIA(WorldRegion.AUSTRALIA),
-	GERMANY(WorldRegion.GERMANY),
-	UNITED_KINGDOM(WorldRegion.UNITED_KINGDOM)
-		{
-			@Override
-			public String toString()
-			{
-				return "U.K.";
-			}
-		},
-	UNITED_STATES(WorldRegion.UNITED_STATES_OF_AMERICA)
-		{
-			@Override
-			public String toString()
-			{
-				return "USA";
-			}
-		},
-	BRAZIL(WorldRegion.BRAZIL),
-	;
-
-	@Getter
-	private final WorldRegion region;
-
-	static RegionFilterMode of(WorldRegion region)
+	public LocatorOrb()
 	{
-		switch (region)
-		{
-			case UNITED_STATES_OF_AMERICA:
-				return UNITED_STATES;
-			case UNITED_KINGDOM:
-				return UNITED_KINGDOM;
-			case AUSTRALIA:
-				return AUSTRALIA;
-			case GERMANY:
-				return GERMANY;
-			case BRAZIL:
-				return BRAZIL;
-			default:
-				throw new IllegalStateException();
-		}
+		super(HITPOINTS, false);
+	}
+
+	@Override
+	public int heals(final Client client)
+	{
+		final int current = getStat().getValue(client);
+
+		return -1 * Math.max(0, Math.min(current - 1, 10));
 	}
 }
