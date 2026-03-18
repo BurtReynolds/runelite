@@ -1822,8 +1822,12 @@ public class InteractionPlugin extends Plugin {
 		// Small human-like pause before selecting
 		sleep(50 + (int) (Math.random() * 80));
 
-		// Select the option
-		return selectMenuOption(option, target, profile);
+		// Select the option — dismiss menu on failure (misclick on wrong object)
+		boolean selected = selectMenuOption(option, target, profile);
+		if (!selected) {
+			dismissMenu();
+		}
+		return selected;
 	}
 
 	/**
@@ -1843,26 +1847,72 @@ public class InteractionPlugin extends Plugin {
 	}
 
 	/**
-	 * Dismiss an open right-click menu by sending Escape key.
+	 * Dismiss an open right-click menu by clicking far away from it,
+	 * then verifying it closed. Falls back to Escape key if clicking doesn't work.
 	 */
 	private void dismissMenu() {
-		java.awt.Canvas canvas = client.getCanvas();
-		if (canvas == null) return;
+		// Find a safe click point away from the menu
+		java.awt.Point safePoint = runOnClientThread(() -> {
+			if (!client.isMenuOpen()) return null;
+			Menu menu = client.getMenu();
+			int menuX = menu.getMenuX();
+			int menuY = menu.getMenuY();
+			int menuW = menu.getMenuWidth();
+			int menuH = menu.getMenuHeight();
+			int canvasW = client.getCanvasWidth();
+			int canvasH = client.getCanvasHeight();
 
-		java.awt.event.KeyEvent press = new java.awt.event.KeyEvent(
-			canvas, java.awt.event.KeyEvent.KEY_PRESSED,
-			System.currentTimeMillis(), 0,
-			java.awt.event.KeyEvent.VK_ESCAPE, java.awt.event.KeyEvent.CHAR_UNDEFINED
-		);
-		java.awt.event.KeyEvent release = new java.awt.event.KeyEvent(
-			canvas, java.awt.event.KeyEvent.KEY_RELEASED,
-			System.currentTimeMillis(), 0,
-			java.awt.event.KeyEvent.VK_ESCAPE, java.awt.event.KeyEvent.CHAR_UNDEFINED
-		);
-		canvas.dispatchEvent(press);
-		sleep(30);
-		canvas.dispatchEvent(release);
-		sleep(100);
+			// Pick a point at least 100px away from the menu in any direction
+			// Try below the menu first, then above, then to the sides
+			int safeX, safeY;
+			if (menuY + menuH + 120 < canvasH) {
+				// Below the menu
+				safeX = menuX + menuW / 2 + (int)((Math.random() - 0.5) * 60);
+				safeY = menuY + menuH + 100 + (int)(Math.random() * 40);
+			} else if (menuY - 120 > 0) {
+				// Above the menu
+				safeX = menuX + menuW / 2 + (int)((Math.random() - 0.5) * 60);
+				safeY = menuY - 100 - (int)(Math.random() * 40);
+			} else if (menuX + menuW + 120 < canvasW) {
+				// Right of the menu
+				safeX = menuX + menuW + 100 + (int)(Math.random() * 40);
+				safeY = menuY + menuH / 2 + (int)((Math.random() - 0.5) * 60);
+			} else {
+				// Left of the menu
+				safeX = menuX - 100 - (int)(Math.random() * 40);
+				safeY = menuY + menuH / 2 + (int)((Math.random() - 0.5) * 60);
+			}
+			safeX = Math.max(10, Math.min(safeX, canvasW - 10));
+			safeY = Math.max(10, Math.min(safeY, canvasH - 10));
+			return new java.awt.Point(safeX, safeY);
+		});
+
+		if (safePoint != null) {
+			// Move mouse away from the menu to close it (no click — clicking could interact with the game world)
+			mouseMovement.moveMouse(safePoint, MouseMovementProfile.FAST);
+			sleep(100 + (int)(Math.random() * 100));
+		}
+
+		// Verify menu closed — if not, fall back to Escape key
+		Boolean stillOpen = runOnClientThread(() -> client.isMenuOpen());
+		if (Boolean.TRUE.equals(stillOpen)) {
+			log.debug("Menu still open after click-away, sending Escape");
+			java.awt.Canvas canvas = client.getCanvas();
+			if (canvas != null) {
+				canvas.dispatchEvent(new java.awt.event.KeyEvent(
+					canvas, java.awt.event.KeyEvent.KEY_PRESSED,
+					System.currentTimeMillis(), 0,
+					java.awt.event.KeyEvent.VK_ESCAPE, java.awt.event.KeyEvent.CHAR_UNDEFINED
+				));
+				sleep(30);
+				canvas.dispatchEvent(new java.awt.event.KeyEvent(
+					canvas, java.awt.event.KeyEvent.KEY_RELEASED,
+					System.currentTimeMillis(), 0,
+					java.awt.event.KeyEvent.VK_ESCAPE, java.awt.event.KeyEvent.CHAR_UNDEFINED
+				));
+				sleep(150);
+			}
+		}
 	}
 
 	/**
@@ -2707,6 +2757,25 @@ public class InteractionPlugin extends Plugin {
 	 * Valid values: 1, 5, 10, -1 (X), 0 (All)
 	 */
 	public boolean setBankQuantity(int quantity, MouseMovementProfile profile) {
+		// Check if the desired quantity mode is already active
+		Boolean alreadySet = runOnClientThread(() -> {
+			int currentType = client.getVarbitValue(net.runelite.api.Varbits.BANK_QUANTITY_TYPE);
+			// BANK_QUANTITY_TYPE: 0=1, 1=5, 2=10, 3=X, 4=All
+			switch (quantity) {
+				case 1:  return currentType == 0;
+				case 5:  return currentType == 1;
+				case 10: return currentType == 2;
+				case -1: return currentType == 3;
+				case 0:  return currentType == 4;
+				default: return false;
+			}
+		});
+		if (Boolean.TRUE.equals(alreadySet)) {
+			log.debug("Bank quantity already set to {}, skipping click",
+				quantity == -1 ? "X" : quantity == 0 ? "All" : quantity);
+			return true;
+		}
+
 		java.awt.Point clickTarget = runOnClientThread(() -> {
 			int widgetId;
 			switch (quantity) {
