@@ -15,4 +15,11 @@ public interface ObjectEventListener {
      * @param objectKey The key of the despawned object (format: {id}_{x}_{y}_{plane})
      */
     void onObjectDespawned(String objectKey);
+
+    /**
+     * Called when an existing object's name changes (e.g. trap state change)
+     * @param object The object with its new name/actions
+     * @param oldName The previous name
+     */
+    void onObjectStateChanged(GameObjectInfo object, String oldName);
 }

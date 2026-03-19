@@ -172,6 +172,8 @@ public class ApiServerPlugin extends Plugin {
         app.get("/api/v1/objects/name/{name}", this::handleGetObjectsByName);
         app.get("/api/v1/objects/closest", this::handleGetClosestObjectByName);
         app.get("/api/v1/objects/action/{action}", this::handleGetObjectsWithAction);
+        app.get("/api/v1/objects/at", this::handleGetObjectAtLocation);
+        app.get("/api/v1/objects/id/{id}", this::handleGetObjectsById);
         app.get("/api/v1/objects/stats", this::handleGetObjectStats);
 
         // Event endpoints
@@ -783,6 +785,45 @@ public class ApiServerPlugin extends Plugin {
         ));
     }
 
+    private void handleGetObjectAtLocation(Context ctx) {
+        if (objectDetectionPlugin == null) {
+            ctx.status(503).json(createError("ObjectDetection plugin not loaded"));
+            return;
+        }
+
+        Integer x = ctx.queryParamAsClass("x", Integer.class).getOrDefault(null);
+        Integer y = ctx.queryParamAsClass("y", Integer.class).getOrDefault(null);
+        Integer plane = ctx.queryParamAsClass("plane", Integer.class).getOrDefault(0);
+
+        if (x == null || y == null) {
+            ctx.status(400).json(createError("'x' and 'y' query parameters are required"));
+            return;
+        }
+
+        GameObjectInfo object = objectDetectionPlugin.getObjectAtLocation(x, y, plane);
+        if (object == null) {
+            ctx.status(404).json(createError("No object found at (" + x + ", " + y + ", " + plane + ")"));
+            return;
+        }
+
+        ctx.json(object);
+    }
+
+    private void handleGetObjectsById(Context ctx) {
+        if (objectDetectionPlugin == null) {
+            ctx.status(503).json(createError("ObjectDetection plugin not loaded"));
+            return;
+        }
+
+        int id = ctx.pathParamAsClass("id", Integer.class).get();
+        List<GameObjectInfo> objects = objectDetectionPlugin.getObjectsById(id);
+        ctx.json(Map.of(
+            "id", id,
+            "count", objects.size(),
+            "objects", objects
+        ));
+    }
+
     private void handleGetObjectStats(Context ctx) {
         if (objectDetectionPlugin == null) {
             ctx.status(503).json(createError("ObjectDetection plugin not loaded"));
@@ -1004,10 +1045,32 @@ public class ApiServerPlugin extends Plugin {
             String objectName = (String) body.get("objectName");
             String action = (String) body.get("action");
             String profileName = (String) body.getOrDefault("profile", "NORMAL");
-
             MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
-            boolean success;
 
+            // Check for location-based interaction (x, y, plane)
+            Object xObj = body.get("x");
+            Object yObj = body.get("y");
+
+            if (xObj != null && yObj != null) {
+                int x = ((Number) xObj).intValue();
+                int y = ((Number) yObj).intValue();
+                int plane = body.containsKey("plane") ? ((Number) body.get("plane")).intValue() : 0;
+
+                boolean success;
+                if (action != null && !action.trim().isEmpty()) {
+                    success = interactionPlugin.interactWithObjectAtLocation(x, y, plane, action, profile);
+                } else {
+                    success = interactionPlugin.interactWithObjectAtLocation(x, y, plane, profile);
+                }
+
+                ctx.json(Map.of("success", success,
+                    "x", x, "y", y, "plane", plane,
+                    "action", action != null ? action : "default"));
+                return;
+            }
+
+            // Name-based interaction (existing behavior)
+            boolean success;
             if (action != null && !action.trim().isEmpty()) {
                 success = interactionPlugin.interactWithObject(objectName, action, profile);
             } else {

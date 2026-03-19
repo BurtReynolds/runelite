@@ -142,6 +142,14 @@ public class ObjectDetectionPlugin extends Plugin implements ObjectEventListener
         return objectManager != null ? objectManager.getClosestObjectWithAction(action) : null;
     }
 
+    public GameObjectInfo getObjectAtLocation(int x, int y, int plane) {
+        return objectManager != null ? objectManager.getObjectAtLocation(x, y, plane) : null;
+    }
+
+    public List<GameObjectInfo> getObjectsById(int id) {
+        return objectManager != null ? objectManager.getObjectsById(id) : List.of();
+    }
+
     public List<NPCInfo> getNPCsNearby(int radius) {
         return objectManager != null ? objectManager.getNPCsNearby(radius) : List.of();
     }
@@ -200,6 +208,25 @@ public class ObjectDetectionPlugin extends Plugin implements ObjectEventListener
             }
 
             GameEvent event = new GameEvent("object_despawned", System.currentTimeMillis(), data);
+            broadcastEventToMonitor(event);
+        }
+    }
+
+    @Override
+    public void onObjectStateChanged(GameObjectInfo object, String oldName) {
+        log.debug("Object state changed: {} -> {} at {}", oldName, object.getName(), object.getLocation());
+
+        if (eventMonitorPlugin != null) {
+            GameEventData data = new GameEventData();
+            data.put("object_id", object.getId());
+            data.put("object_name", object.getName());
+            data.put("old_name", oldName);
+            data.put("x", object.getLocation().getX());
+            data.put("y", object.getLocation().getY());
+            data.put("plane", object.getPlane());
+            data.put("actions", object.getActions().toString());
+
+            GameEvent event = new GameEvent("object_state_changed", System.currentTimeMillis(), data);
             broadcastEventToMonitor(event);
         }
     }

@@ -183,6 +183,11 @@ public class ObjectManager {
                 now
         );
 
+        // Detect name change on existing object (e.g. trap state change)
+        if (existing != null && !existing.getName().equals(name) && eventListener != null) {
+            eventListener.onObjectStateChanged(info, existing.getName());
+        }
+
         gameObjects.put(key, info);
     }
 
@@ -395,6 +400,20 @@ public class ObjectManager {
                 .filter(obj -> obj.hasAction(action))
                 .min(Comparator.comparingDouble(obj -> obj.distanceFrom(playerLoc)))
                 .orElse(null);
+    }
+
+    public GameObjectInfo getObjectAtLocation(int x, int y, int plane) {
+        WorldPoint target = new WorldPoint(x, y, plane);
+        return gameObjects.values().stream()
+                .filter(obj -> obj.getLocation().equals(target))
+                .findFirst()
+                .orElse(null);
+    }
+
+    public List<GameObjectInfo> getObjectsById(int id) {
+        return gameObjects.values().stream()
+                .filter(obj -> obj.getId() == id)
+                .collect(Collectors.toList());
     }
 
     public List<NPCInfo> getNPCsNearby(int radius) {

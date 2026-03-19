@@ -28,6 +28,7 @@ import net.runelite.client.plugins.objectdetection.ObjectDetectionPlugin;
 import net.runelite.client.game.WorldService;
 import net.runelite.http.api.worlds.WorldResult;
 import net.runelite.client.ui.overlay.OverlayManager;
+import net.runelite.client.util.Text;
 
 import javax.inject.Inject;
 import java.awt.Canvas;
@@ -367,6 +368,45 @@ public class InteractionPlugin extends Plugin {
 	}
 
 	/**
+	 * Interact with an object at a specific world location (left-click).
+	 */
+	public boolean interactWithObjectAtLocation(int x, int y, int plane, MouseMovementProfile profile) {
+		if (objectDetectionPlugin == null) {
+			log.error("ObjectDetection plugin not available");
+			return false;
+		}
+
+		GameObjectInfo object = objectDetectionPlugin.getObjectAtLocation(x, y, plane);
+		if (object == null) {
+			log.warn("No object found at ({}, {}, {})", x, y, plane);
+			return false;
+		}
+
+		return interactWithObject(object, profile);
+	}
+
+	/**
+	 * Right-click an object at a specific world location and select an action.
+	 * Retries with the same object if the menu doesn't have the action (e.g. stale state).
+	 */
+	public boolean interactWithObjectAtLocation(int x, int y, int plane, String action, MouseMovementProfile profile) {
+		if (objectDetectionPlugin == null) {
+			log.error("ObjectDetection plugin not available");
+			return false;
+		}
+
+		GameObjectInfo object = objectDetectionPlugin.getObjectAtLocation(x, y, plane);
+		if (object == null) {
+			log.warn("No object found at ({}, {}, {})", x, y, plane);
+			return false;
+		}
+
+		log.info("Interacting with '{}' (id={}) at ({}, {}, {}) action='{}'",
+			object.getName(), object.getId(), x, y, plane, action);
+		return rightClickObjectAndSelect(object, action, profile);
+	}
+
+	/**
 	 * Interact with closest object matching action
 	 */
 	public boolean interactWithAction(String action, MouseMovementProfile profile) {
@@ -629,8 +669,9 @@ public class InteractionPlugin extends Plugin {
 			}
 
 			for (Widget item : items) {
-				if (item != null && item.getName() != null && item.getName().contains(itemName)) {
-					log.info("Found inventory item: {}", itemName);
+				if (item != null && item.getName() != null
+						&& Text.removeTags(item.getName()).equalsIgnoreCase(itemName)) {
+					log.info("Found inventory item (exact): {}", itemName);
 					return getWidgetClickPoint(item, profile);
 				}
 			}
@@ -660,7 +701,8 @@ public class InteractionPlugin extends Plugin {
 			}
 
 			for (Widget item : items) {
-				if (item != null && item.getName() != null && item.getName().contains(itemName)) {
+				if (item != null && item.getName() != null
+						&& Text.removeTags(item.getName()).equalsIgnoreCase(itemName)) {
 					Point screenPoint = getWidgetScreenPoint(item);
 					if (screenPoint != null) {
 						mouseMovement.moveMouse(
@@ -1630,7 +1672,8 @@ public class InteractionPlugin extends Plugin {
 			if (items == null) return null;
 
 			for (Widget item : items) {
-				if (item != null && item.getName() != null && item.getName().contains(itemName)) {
+				if (item != null && item.getName() != null
+						&& Text.removeTags(item.getName()).equalsIgnoreCase(itemName)) {
 					return getWidgetScreenPoint(item);
 				}
 			}
@@ -2015,7 +2058,8 @@ public class InteractionPlugin extends Plugin {
 			}
 
 			for (Widget item : items) {
-				if (item != null && item.getName() != null && item.getName().contains(itemName)) {
+				if (item != null && item.getName() != null
+						&& Text.removeTags(item.getName()).equalsIgnoreCase(itemName)) {
 					return getWidgetScreenPoint(item);
 				}
 			}
