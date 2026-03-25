@@ -337,6 +337,9 @@ public class ApiServerPlugin extends Plugin {
         // Minimap click endpoints
         app.post("/api/v1/interaction/minimap/click", this::handleMinimapClick);
 
+        // Tile click (viewport) endpoint
+        app.post("/api/v1/interaction/tile/click", this::handleTileClick);
+
         // Grand Exchange endpoints
         app.get("/api/v1/ge/status", this::handleGetGEStatus);
         app.get("/api/v1/ge/offers", this::handleGetGEOffers);
@@ -3259,13 +3262,28 @@ public class ApiServerPlugin extends Plugin {
         try {
             @SuppressWarnings("unchecked") Map<String, Object> body = ctx.bodyAsClass(Map.class);
             String sourceItem = (String) body.get("sourceItem");
-            String targetItem = (String) body.get("targetItem");
-            if (sourceItem == null || targetItem == null) {
-                ctx.status(400).json(createError("'sourceItem' and 'targetItem' are required"));
-                return;
-            }
             String profileName = (String) body.getOrDefault("profile", "NORMAL");
             MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+
+            // Slot-based targeting: use sourceItem on a specific inventory slot
+            Object targetSlotObj = body.get("targetSlot");
+            if (targetSlotObj != null) {
+                int targetSlot = ((Number) targetSlotObj).intValue();
+                if (sourceItem == null) {
+                    ctx.status(400).json(createError("'sourceItem' is required"));
+                    return;
+                }
+                boolean success = interactionPlugin.useItemOnSlot(sourceItem, targetSlot, profile);
+                ctx.json(Map.of("success", success, "sourceItem", sourceItem, "targetSlot", targetSlot));
+                return;
+            }
+
+            // Name-based targeting: use sourceItem on targetItem by name
+            String targetItem = (String) body.get("targetItem");
+            if (sourceItem == null || targetItem == null) {
+                ctx.status(400).json(createError("'sourceItem' and 'targetItem' (or 'targetSlot') are required"));
+                return;
+            }
             boolean success = interactionPlugin.useItemOnItem(sourceItem, targetItem, profile);
             ctx.json(Map.of("success", success, "sourceItem", sourceItem, "targetItem", targetItem));
         } catch (Exception e) {
@@ -3420,6 +3438,26 @@ public class ApiServerPlugin extends Plugin {
                 return;
             }
             ctx.json(Map.of("success", success));
+        } catch (Exception e) {
+            ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
+        }
+    }
+
+    private void handleTileClick(Context ctx) {
+        if (interactionPlugin == null) { ctx.status(503).json(createError("Interaction plugin not loaded")); return; }
+        try {
+            @SuppressWarnings("unchecked") Map<String, Object> body = ctx.bodyAsClass(Map.class);
+            if (!body.containsKey("x") || !body.containsKey("y")) {
+                ctx.status(400).json(createError("Provide 'x' and 'y' (world coords)"));
+                return;
+            }
+            int x = ((Number) body.get("x")).intValue();
+            int y = ((Number) body.get("y")).intValue();
+            int plane = body.containsKey("plane") ? ((Number) body.get("plane")).intValue() : 0;
+            String profileName = (String) body.getOrDefault("profile", "NORMAL");
+            MouseMovementProfile profile = MouseMovementProfile.fromString(profileName);
+            boolean success = interactionPlugin.clickTile(x, y, plane, profile);
+            ctx.json(Map.of("success", success, "x", x, "y", y, "plane", plane));
         } catch (Exception e) {
             ctx.status(400).json(createError("Invalid request: " + e.getMessage()));
         }

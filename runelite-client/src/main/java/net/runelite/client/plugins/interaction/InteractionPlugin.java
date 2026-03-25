@@ -5728,8 +5728,8 @@ public class InteractionPlugin extends Plugin {
 	// ===== USE ITEM ON ITEM / OBJECT / NPC =====
 
 	/**
-	 * Use one inventory item on another inventory item.
-	 * Right-clicks the first item, selects "Use", then clicks the second item.
+	 * Use one inventory item on another inventory item by name.
+	 * Right-clicks the first item, selects "Use", then clicks the first matching target.
 	 */
 	public boolean useItemOnItem(String sourceItem, String targetItem, MouseMovementProfile profile) {
 		// Step 1: Open inventory if needed
@@ -5753,6 +5753,35 @@ public class InteractionPlugin extends Plugin {
 		}
 
 		log.info("Used '{}' on '{}'", sourceItem, targetItem);
+		return true;
+	}
+
+	/**
+	 * Use one inventory item on a specific inventory slot (0-27).
+	 * Right-clicks the source item, selects "Use", then clicks the target slot.
+	 */
+	public boolean useItemOnSlot(String sourceItem, int targetSlot, MouseMovementProfile profile) {
+		// Step 1: Open inventory if needed
+		if (!openPlayerTab(PlayerTab.INVENTORY, profile)) {
+			log.warn("Could not open inventory tab");
+			return false;
+		}
+		sleep(100 + (int)(Math.random() * 100));
+
+		// Step 2: Right-click source item and select "Use"
+		if (!rightClickInventoryItemAndSelect(sourceItem, "Use", profile)) {
+			log.warn("Could not select 'Use' on '{}'", sourceItem);
+			return false;
+		}
+		sleep(150 + (int)(Math.random() * 150));
+
+		// Step 3: Click the target slot
+		if (!clickInventorySlot(targetSlot, profile)) {
+			log.warn("Could not click inventory slot {}", targetSlot);
+			return false;
+		}
+
+		log.info("Used '{}' on slot {}", sourceItem, targetSlot);
 		return true;
 	}
 
@@ -6044,6 +6073,48 @@ public class InteractionPlugin extends Plugin {
 		WorldPoint playerPos = runOnClientThread(() -> client.getLocalPlayer().getWorldLocation());
 		if (playerPos == null) return false;
 		return clickMinimap(playerPos.getX() + dx, playerPos.getY() + dy, playerPos.getPlane(), profile);
+	}
+
+	// ===== TILE CLICK (viewport) =====
+
+	/**
+	 * Click a world tile on the game viewport (NOT the minimap).
+	 * The tile must be visible on screen. Useful for short-range movement
+	 * without triggering minimap-style pathing.
+	 */
+	public boolean clickTile(int worldX, int worldY, int plane, MouseMovementProfile profile) {
+		Point screenPoint = runOnClientThread(() -> {
+			int sceneX = worldX - client.getBaseX();
+			int sceneY = worldY - client.getBaseY();
+
+			if (sceneX < 0 || sceneX >= 104 || sceneY < 0 || sceneY >= 104) {
+				log.warn("Tile ({}, {}) is outside the scene", worldX, worldY);
+				return null;
+			}
+
+			net.runelite.api.coords.LocalPoint localPoint =
+				net.runelite.api.coords.LocalPoint.fromScene(sceneX, sceneY);
+			if (localPoint == null) return null;
+
+			return net.runelite.api.Perspective.localToCanvas(client, localPoint, plane);
+		});
+
+		if (screenPoint == null) {
+			log.warn("Cannot click tile ({}, {}, {}) — not visible on screen", worldX, worldY, plane);
+			return false;
+		}
+
+		int jitterX = (int) ((Math.random() - 0.5) * 10);
+		int jitterY = (int) ((Math.random() - 0.5) * 10);
+
+		log.info("Clicking tile at screen({},{}) for world({},{},{})",
+			screenPoint.getX() + jitterX, screenPoint.getY() + jitterY, worldX, worldY, plane);
+
+		mouseMovement.moveAndClick(
+			new java.awt.Point(screenPoint.getX() + jitterX, screenPoint.getY() + jitterY),
+			profile
+		);
+		return true;
 	}
 
 	// ===== GRAND EXCHANGE INTERACTION =====
